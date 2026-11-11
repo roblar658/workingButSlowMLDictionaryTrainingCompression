@@ -179,7 +179,7 @@ masks_rem = [tm[k] for k in freq]
 
 raw_items = [(p, suf, inf) for p, suf, inf in zip(p_s, suf_list, inf_rem)]
 data = {"base_list": base_list, "raw_items": raw_items, "masks_rem": masks_rem}
-out_p = r"C:\Users\rober\.gemini\antigravity\brain\122bda10-b37e-4b31-adb7-f8c6c254c59a\scratch\ml_dataset.pkl"
+out_p = r"C:\dev\ML\ml_dataset.pkl"
 with open(out_p, "wb") as f:
     pickle.dump(data, f)
 print(f"Saved {len(raw_items)} base items ({sum(len(s) for _,s,_ in raw_items)} suf chars) and {len(masks_rem)} masks to ml_dataset.pkl")
