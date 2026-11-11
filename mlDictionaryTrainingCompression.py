@@ -2,7 +2,7 @@ import os, re, math, time, lzma, struct, pickle, subprocess, gc
 from collections import Counter
 import numpy as np
 
-DATASET_PATH = r"C:\dev\ML\ml_dataset.pkl"
+DATASET_PATH = r"C:\dev\ML\ml_dataset.pkl" 
 DICT_PATH = r"C:\dev\ML\dict.txt"
 
 import heapq
@@ -436,22 +436,61 @@ def build_and_eval(D, max_fsm, out_path, epochs=165, l1_w=0.80, U_MAX=112):
 
     C_SRC = (
         f"typedef unsigned char u8;typedef signed char i8;typedef unsigned short u16;typedef unsigned int u32;typedef unsigned long long u64;\n"
-        f"static u8 F1[55*512],F2[(1<<18)+326],F3[(1<<19)+326];\n"
+        f"static u8 F1[55*512],F2[(1<<18)+326],F3[(1<<19)+326],WL[102400];\n"
+        f"static char W[1050000];static u32 WO[102400],WI[102400],wp,nw;static u64 WK[102400];\n"
         f"static u32 mix(u32 h){{h*=0x9E3779B1u;return h^(h>>16);}}\n"
+        f"static void addw(const char*s,int l){{u32 o=wp;for(int i=0;i<l;i++)W[wp++]=s[i];WO[nw]=o;WL[nw]=(u8)l;u64 k=0;int m=l<8?l:8;for(int i=0;i<m;i++)k|=((u64)(u8)s[i])<<(56-8*i);WK[nw]=k;WI[nw]=nw;nw++;}}\n"
+        f"static int vow(char c){{return c=='a'||c=='e'||c=='i'||c=='o'||c=='u';}}\n"
+        f"static int cy(const char*w,int l){{return l>1&&w[l-1]=='y'&&!vow(w[l-2]);}}\n"
+        f"static int mk(char*d,const char*w,int l,int ch,const char*s,int sl){{int k=l-ch;for(int i=0;i<k;i++)d[i]=w[i];for(int i=0;i<sl;i++)d[k+i]=s[i];return k+sl;}}\n"
+        f"static int mkp(char*d,const char*p,int pl,const char*w,int l){{for(int i=0;i<pl;i++)d[i]=p[i];for(int i=0;i<l;i++)d[pl+i]=w[i];return pl+l;}}\n"
+        f"static int c_pl(char*d,const char*w,int l){{if(!(w[0]>='A'&&w[0]<='Z')){{if(w[l-1]=='s'||w[l-1]=='x'||w[l-1]=='z'||(l>=2&&w[l-1]=='h'&&(w[l-2]=='c'||w[l-2]=='s')))return mk(d,w,l,0,\"es\",2);if(cy(w,l))return mk(d,w,l,1,\"ies\",3);}}return mk(d,w,l,0,\"s\",1);}}\n"
+        f"static int c_ed(char*d,const char*w,int l){{return w[l-1]=='e'?mk(d,w,l,0,\"d\",1):(cy(w,l)?mk(d,w,l,1,\"ied\",3):mk(d,w,l,0,\"ed\",2));}}\n"
+        f"static int c_ing(char*d,const char*w,int l){{return(w[l-1]=='e'&&!(l>=2&&(w[l-2]=='e'||w[l-2]=='y'||w[l-2]=='o')))?mk(d,w,l,1,\"ing\",3):mk(d,w,l,0,\"ing\",3);}}\n"
+        f"static int c_er(char*d,const char*w,int l){{return w[l-1]=='e'?mk(d,w,l,0,\"r\",1):(cy(w,l)?mk(d,w,l,1,\"ier\",3):mk(d,w,l,0,\"er\",2));}}\n"
+        f"static int c_est(char*d,const char*w,int l){{return w[l-1]=='e'?mk(d,w,l,0,\"st\",2):(cy(w,l)?mk(d,w,l,1,\"iest\",4):mk(d,w,l,0,\"est\",3));}}\n"
+        f"static int c_ly(char*d,const char*w,int l){{if(cy(w,l))return mk(d,w,l,1,\"ily\",3);if(l>2&&w[l-1]=='e'&&w[l-2]=='l'&&!vow(w[l-3]))return mk(d,w,l,1,\"y\",1);if(l>=2&&w[l-2]=='i'&&w[l-1]=='c')return mk(d,w,l,0,\"ally\",4);return mk(d,w,l,0,\"ly\",2);}}\n"
+        f"static int c_al(char*d,const char*w,int l){{return w[l-1]=='e'?mk(d,w,l,1,\"al\",2):(w[l-1]=='y'?mk(d,w,l,1,\"ial\",3):mk(d,w,l,0,\"al\",2));}}\n"
+        f"static int c_ic(char*d,const char*w,int l){{return(w[l-1]=='e'||w[l-1]=='y')?mk(d,w,l,1,\"ic\",2):mk(d,w,l,0,\"ic\",2);}}\n"
+        f"static int c_ab(char*d,const char*w,int l){{return(w[l-1]=='e'&&!(l>=2&&(w[l-2]=='e'||w[l-2]=='c'||w[l-2]=='g')))?mk(d,w,l,1,\"able\",4):mk(d,w,l,0,\"able\",4);}}\n"
+        f"static void c_app(const char*w,int l,int op){{char b1[64],b2[64];\n"
+        f"if(op>=37){{static const char*P[]={{\"un\",\"re\",\"dis\",\"in\",\"de\",\"over\",\"mis\",\"non\",\"pre\",\"out\",\"under\",\"sub\",\"im\",\"en\",\"be\"}};const char*q=P[op-37];int ql=0;while(q[ql])ql++;addw(b1,mkp(b1,q,ql,w,l));return;}}\n"
+        f"if(op==0){{addw(b1,mk(b1,w,l,0,\"'s\",2));return;}}if(op==1){{addw(b1,c_pl(b1,w,l));return;}}if(op==2){{addw(b1,c_ed(b1,w,l));return;}}if(op==3){{addw(b1,c_ing(b1,w,l));return;}}\n"
+        f"if(op==4){{int n=c_er(b1,w,l);addw(b1,n);addw(b2,mk(b2,b1,n,0,\"'s\",2));addw(b2,c_pl(b2,b1,n));return;}}\n"
+        f"if(op==5){{addw(b1,c_er(b1,w,l));return;}}if(op==6){{addw(b1,c_est(b1,w,l));return;}}if(op==7){{addw(b1,c_ly(b1,w,l));return;}}\n"
+        f"if(op==8){{int n=cy(w,l)?mk(b1,w,l,1,\"iness\",5):mk(b1,w,l,0,\"ness\",4);addw(b1,n);addw(b2,mk(b2,b1,n,0,\"'s\",2));return;}}\n"
+        f"if(op==9){{int n=mk(b1,w,l,w[l-1]=='e',\"ion\",3);addw(b1,n);addw(b2,mk(b2,b1,n,0,\"'s\",2));addw(b2,c_pl(b2,b1,n));return;}}\n"
+        f"if(op==10){{int n=mk(b1,w,l,0,\"ment\",4);addw(b1,n);addw(b2,mk(b2,b1,n,0,\"'s\",2));addw(b2,c_pl(b2,b1,n));return;}}\n"
+        f"if(op==11){{addw(b1,c_ab(b1,w,l));return;}}\n"
+        f"if(op<15){{int x=op-12;int n=x==0?c_pl(b1,w,l):(x==1?c_ed(b1,w,l):c_ing(b1,w,l));addw(b2,mkp(b2,\"un\",2,b1,n));return;}}\n"
+        f"if(op<18){{int x=op-15;int n=x==0?c_pl(b1,w,l):(x==1?c_ed(b1,w,l):c_ing(b1,w,l));addw(b2,mkp(b2,\"re\",2,b1,n));return;}}\n"
+        f"if(op==18){{int n=c_pl(b1,w,l);addw(b2,mkp(b2,\"dis\",3,b1,n));return;}}\n"
+        f"if(op==19){{int n=mk(b1,w,l,(cy(w,l)||w[l-1]=='e'),\"ity\",3);addw(b1,n);addw(b2,mk(b2,b1,n,0,\"'s\",2));addw(b2,c_pl(b2,b1,n));return;}}\n"
+        f"if(op==20){{int n=mk(b1,w,l,w[l-1]=='e',\"ize\",3);addw(b1,n);addw(b2,c_pl(b2,b1,n));addw(b2,c_ed(b2,b1,n));addw(b2,c_ing(b2,b1,n));return;}}\n"
+        f"if(op<27){{char dc=w[l-1];int dl=mk(b1,w,l,0,&dc,1);if(op==23){{int n=mk(b2,b1,dl,0,\"er\",2);addw(b2,n);addw(b1,mk(b1,b2,n,0,\"'s\",2));addw(b1,c_pl(b1,b2,n));return;}}static const char*S6[]={{\"ed\",\"ing\",\"\",\"er\",\"est\",\"y\"}};const char*s=S6[op-21];int sl=0;while(s[sl])sl++;addw(b2,mk(b2,b1,dl,0,s,sl));return;}}\n"
+        f"if(op==27){{addw(b1,mk(b1,w,l,w[l-1]=='e',\"y\",1));return;}}if(op==28){{addw(b1,c_al(b1,w,l));return;}}\n"
+        f"if(op==29){{int n=c_al(b1,w,l);addw(b1,n);addw(b2,c_ly(b2,b1,n));return;}}if(op==30){{addw(b1,c_ic(b1,w,l));return;}}\n"
+        f"if(op==31){{int n=c_ic(b1,w,l);addw(b1,n);addw(b2,mk(b2,b1,n,0,\"al\",2));addw(b2,mk(b2,b1,n,0,\"ally\",4));return;}}\n"
+        f"if(op<34){{int n=mk(b1,w,l,w[l-1]=='e',op==32?\"ive\":\"ous\",3);addw(b1,n);addw(b2,c_ly(b2,b1,n));return;}}\n"
+        f"if(op==34){{int n=c_ing(b1,w,l);addw(b2,mk(b2,b1,n,0,\"ly\",2));return;}}if(op==35){{int n=c_ab(b1,w,l);addw(b2,mk(b2,b1,n,1,\"y\",1));return;}}\n"
+        f"int n=c_ly(b1,w,l);addw(b2,mkp(b2,\"un\",2,b1,n));}}\n"
+        f"static int cmpw(u32 a,u32 b){{if(WK[a]!=WK[b])return WK[a]<WK[b]?-1:1;int la=WL[a],lb=WL[b],m=la<lb?la:lb;const char*pa=W+WO[a],*pb=W+WO[b];for(int i=8;i<m;i++)if(pa[i]!=pb[i])return(u8)pa[i]<(u8)pb[i]?-1:1;return la<lb?-1:(la>lb?1:0);}}\n"
+        f"static void qs(int l,int r){{while(l<r){{int i=l,j=r;u32 p=WI[(l+r)>>1];while(i<=j){{while(cmpw(WI[i],p)<0)i++;while(cmpw(WI[j],p)>0)j--;if(i<=j){{u32 t=WI[i];WI[i]=WI[j];WI[j]=t;i++;j--;}}}}if(j-l<r-i){{if(l<j)qs(l,j);l=i;}}else{{if(i<r)qs(i,r);r=j;}}}}}}\n"
         f"#define NN(a,b,c,e,f,g) {c_nn_body}\n"
         f"#define ST(nid,lu,ru) nd=(nid);ui=un[nd];k1=o1+nd;k2=k2b+nd;k3=k3b+nd;s1=F1[k1];s2=F2[k2];s3=F3[k3];wm=qwm+3*ui;uq=bqu+{D}*ui;"
         f"rv=(R>>12)*S[B[nd]*16+{sig_pad}+wm[0]*qs1[s1]+wm[1]*qs2[s2]+wm[2]*qs3[s3]+{c_udot}];"
         f"if(L<rv){{R=rv;u=(lu);F1[k1]=x0[s1];F2[k2]=x0[s2];F3[k3]=x0[s3];}}"
         f"else{{L-=rv;R-=rv;u=(ru);F1[k1]=x1[s1];F2[k2]=x1[s2];F3[k3]=x1[s3];}}"
         f"while(R<16777216ULL){{R<<=8;L=(L<<8)|Q[di++];}}\n"
-        f"int dec(const u8*Q,const i8*B,const u16*T,const u16*S,u8*O){{\n"
+        f"int dec(const u8*Q,const i8*B,const u16*T,const u16*S,const u8*MP,u8*O){{\n"
+        f"wp=0;nw=0;u32 mo[200];int mq=0;for(int i=0;i<200;i++){{mo[i]=mq;mq+=1+MP[mq];}}\n"
         f"const char*CH=\"'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz\";\n"
         f"const i8*qs1=B+{o_s1},*qs2=B+{o_s2},*qs3=B+{o_s3},*qwm=B+{o_wm},*ec0=B+{o_e},*ec1=B+{o_ec1},*ec2=B+{o_ec2},*ep0=B+{o_ep0},*ep1=B+{o_ep1},*eaux=B+{o_eaux},*bqu=B+{o_qu};\n"
         f"const u8*x0=(const u8*)B+{o_x0},*x1=(const u8*)B+{o_x1},*un=(const u8*)B+{o_un};\n"
         f"const u16*lp=T,*rp=T+19,*vp=T+38,*lr=T+58,*rr=T+111,*vr=T+164,*lil=T+218,*ril=T+417,*vil=T+616,*liu=T+816,*riu=T+819,*viu=T+822,*lc0=T+826,*rc0=T+878,*mc0=T+930,*vc0=T+982,*upi=T+1035;\n"
         f"u32 lmp[39];for(int i=0;i<20;i++)lmp[19+i]=1u<<vp[i];for(int i=18;i>=0;i--)lmp[i]=lmp[lp[i]]|lmp[rp[i]];\n"
         f"u64 R=1ULL<<32,L=((u64)Q[0]<<24)|((u64)Q[1]<<16)|((u64)Q[2]<<8)|Q[3],rv;\n"
-        f"u32 di=4,pc[64],wc[64],o1,k2b,k3b,k1,k2,k3,vpm;int oi=0,pp=0,pi=2,psl=0,plen=0;\n"
+        f"u32 di=4,pc[64],wc[64],o1,k2b,k3b,k1,k2,k3,vpm;char WB[64],PB[64];int pp=0,pi=2,psl=0,plen=0;\n"
         f"for(int i=0;i<5;i++)pc[i]=54;\n"
         f"for(int _w=0;_w<35771;_w++){{\n"
         f"int ppb=pp<19?pp:19,plb=plen<19?plen:19,psb=psl<15?psl:15;vpm=0;\n"
@@ -468,8 +507,8 @@ def build_and_eval(D, max_fsm, out_path, epochs=165, l1_w=0.80, U_MAX=112):
         f"u=0;while(u<52){{if(lo>mc0[u]){{u=rc0[u];continue;}}ST(19+u,lc0[u],rc0[u])}}\n"
         f"int c0i=vc0[u-52];\n"
         f"for(int i=0;i<5+p;i++)wc[i]=pc[i];wc[5+p]=c0i;\n"
-        f"int sl=0,up0=(wc[5]>=1&&wc[5]<=26),wlen=p+1;\n"
-        f"int sp_pos=oi+3;O[oi]=p;O[sp_pos++]=CH[c0i];\n"
+        f"for(int i=0;i<p;i++)WB[i]=PB[i];WB[p]=CH[c0i];\n"
+        f"int up0=(wc[5]>=1&&wc[5]<=26),wlen=p+1;\n"
         f"u32 c1=c0i,c2=wc[5+p-1],c3=wc[5+p-2];int cln=p+1,pi2=1;\n"
         f"for(;;){{\n"
         f"int cl19=cln<19?cln:19,ps19=pi2<19?pi2:19;\n"
@@ -477,21 +516,21 @@ def build_and_eval(D, max_fsm, out_path, epochs=165, l1_w=0.80, U_MAX=112):
         f"o1=c1<<9;k2b=mix((c2<<6)^c1^0x7777u)&((1<<18)-1);k3b=mix((c3<<12)^(c2<<6)^c1^0x8888u)&((1<<19)-1);\n"
         f"u=0;while(u<53){{ST(71+u,lr[u],rr[u])}}\n"
         f"int tok=vr[u-53];if(tok==53)break;\n"
-        f"wc[5+cln++]=tok;O[sp_pos++]=CH[tok];c3=c2;c2=c1;c1=tok;pi2++;wlen++;\n"
+        f"wc[5+cln++]=tok;WB[wlen++]=CH[tok];c3=c2;c2=c1;c1=tok;pi2++;\n"
         f"}}\n"
-        f"sl=sp_pos-(oi+3);O[oi+1]=sl;\n"
-        f"int pif=pi!=2,wl19=cln<19?cln:19;\n"
+        f"int sl=pi2,pif=pi!=2,wl19=cln<19?cln:19;\n"
         f"NN(c1,c2,c3,60+wl19,60+pb19,48+up0*2+pif)\n"
         f"o1=c1<<9;k2b=mix((c2<<6)^c1^0xAAAAu)&((1<<18)-1);k3b=mix((c3<<12)^(c2<<6)^c1^0xBBBBu)&((1<<19)-1);\n"
         f"int lm=up0?3:199,bo=up0?323:124;const u16*lt=up0?liu:lil,*rt=up0?riu:ril;\n"
         f"u=0;while(u<lm){{ST(bo+u,lt[u],rt[u])}}\n"
-        f"int inf=up0?upi[viu[u-3]]:vil[u-199];O[oi+2]=inf;oi=sp_pos;\n"
-        f"for(int i=0;i<5+wlen;i++)pc[i]=wc[i];plen=wlen;pp=p;pi=inf;psl=sl;\n"
-        f"}}return oi;}}\n"
+        f"int inf=up0?upi[viu[u-3]]:vil[u-199];\n"
+        f"addw(WB,wlen);const u8*mp=MP+mo[inf];int nk=mp[0];for(int k=1;k<=nk;k++)c_app(WB,wlen,mp[k]);\n"
+        f"for(int i=0;i<5+wlen;i++)pc[i]=wc[i];for(int i=0;i<wlen;i++)PB[i]=WB[i];plen=wlen;pp=p;pi=inf;psl=sl;\n"
+        f"}}qs(0,(int)nw-1);int oi=0;for(u32 i=0;i<nw;i++){{u32 id=WI[i];int l=WL[id];const char*s=W+WO[id];for(int j=0;j<l;j++)O[oi++]=(u8)s[j];O[oi++]='\\n';}}return oi;}}\n"
     )
 
-    INNER_CODE = f'''def solve(Q,B):
- import struct,sys,math,ctypes,os,shutil,subprocess,tempfile
+    INNER_CODE = f'''def solve(Q,B,pr,sp_f):
+ import struct,sys,math,ctypes
  ns={N_FSM}
  def ct(ln):
   K=len(ln);L=[0]*(K-1);R=[0]*(K-1);V=[0]*K;nt=1;li=c=pl=0
@@ -517,73 +556,63 @@ def build_and_eval(D, max_fsm, out_path, epochs=165, l1_w=0.80, U_MAX=112):
  o_t={o_un+326}
  lp,rp,vp=ct(B[o_t:o_t+20]);lr,rr,vr=ct(B[o_t+20:o_t+74]);lil,ril,vil=ct(B[o_t+74:o_t+274]);liu,riu,viu=ct(B[o_t+274:o_t+278])
  lc0,rc0,mc0,vc0=bc0(B[o_t+278:o_t+330]);up_inf=B[o_t+330:o_t+334]
- o=o_t+334;MOPS=[]
- for _ in range(200):k=B[o];MOPS.append(tuple(B[o+1:o+1+k]));o+=1+k
  sp={sig_pad};S=tuple(min(4095,max(1,round(4096.0/(1.0+math.exp(x/128.0))))) for x in range(-sp,sp+1))
- PRE="un re dis in de over mis non pre out under sub im en be".split()
- def cy(w):return len(w)>1 and w[-1]=="y" and w[-2] not in "aeiou"
- def pl(w):
-  if not w[0].isupper():
-   if w.endswith(("s","x","z","ch","sh")):return w+"es"
-   if cy(w):return w[:-1]+"ies"
-  return w+"s"
- def ed(w):return w+"d" if w[-1]=="e" else((w[:-1]+"ied") if cy(w) else w+"ed")
- def ing(w):return(w[:-1]+"ing") if(w[-1]=="e" and not w.endswith(("ee","ye","oe"))) else w+"ing"
- def er(w):return w+"r" if w[-1]=="e" else((w[:-1]+"ier") if cy(w) else w+"er")
- def est(w):return w+"st" if w[-1]=="e" else((w[:-1]+"iest") if cy(w) else w+"est")
- def ly(w):
-  if cy(w):return w[:-1]+"ily"
-  if w.endswith("le") and len(w)>2 and w[-3] not in "aeiou":return w[:-1]+"y"
-  return w+"ally" if w.endswith("ic") else w+"ly"
- def al(w):return(w[:-1]+"al") if w[-1]=="e" else((w[:-1]+"ial") if w[-1]=="y" else w+"al")
- def ic(w):return(w[:-1]+"ic") if w[-1] in "ey" else w+"ic"
- def ab(w):return(w[:-1]+"able") if(w[-1]=="e" and not w.endswith(("ee","ce","ge"))) else w+"able"
- def app(w,op):
-  if op>=37:return(PRE[op-37]+w,)
-  if op<4:return(w+"\'s",pl(w),ed(w),ing(w))[op:op+1]
-  if op==4:e=er(w);return(e,e+"\'s",pl(e))
-  if op<8:return(er(w),est(w),ly(w))[op-5:op-4]
-  if op==8:n=(w[:-1]+"iness") if cy(w) else w+"ness";return(n,n+"\'s")
-  if op==9:j=(w[:-1] if w[-1]=="e" else w)+"ion";return(j,j+"\'s",pl(j))
-  if op==10:t=w+"ment";return(t,t+"\'s",pl(t))
-  if op==11:return(ab(w),)
-  if op<15:return("un"+(pl,ed,ing)[op-12](w),)
-  if op<18:return("re"+(pl,ed,ing)[op-15](w),)
-  if op==18:return("dis"+pl(w),)
-  if op==19:t=(w[:-1] if(cy(w) or w[-1]=="e") else w)+"ity";return(t,t+"\'s",pl(t))
-  if op==20:z=(w[:-1] if w[-1]=="e" else w)+"ize";return(z,pl(z),ed(z),ing(z))
-  if op<27:
-   d=w+w[-1]
-   if op==23:e=d+"er";return(e,e+"\'s",pl(e))
-   return(d+("ed","ing","","er","est","y")[op-21],)
-  if op==27:return((w[:-1] if w[-1]=="e" else w)+"y",)
-  if op==28:return(al(w),)
-  if op==29:a=al(w);return(a,ly(a))
-  if op==30:return(ic(w),)
-  if op==31:z=ic(w);return(z,z+"al",z+"ally")
-  if op<34:z=(w[:-1] if w[-1]=="e" else w)+("ive" if op==32 else "ous");return(z,ly(z))
-  return(ing(w)+"ly",) if op==34 else((ab(w)[:-1]+"y",) if op==35 else("un"+ly(w),))
- D=[]
  try:
-  gc=shutil.which("gcc")
-  if not gc:raise OSError
-  sp_f=os.path.join(tempfile.gettempdir(),"dc_"+str(os.getpid())+(".dll" if os.name=="nt" else ".so"))
-  cs={repr(C_SRC)}
-  cmd=[gc,"-O1","-shared"]+ ([] if os.name=="nt" else ["-fPIC"])+["-x","c","-","-o",sp_f]
-  r=subprocess.run(cmd,input=cs.encode(),capture_output=True)
-  if r.returncode:raise OSError
+  if not pr or pr.wait():raise OSError
   Ta=lp+rp+vp+lr+rr+vr+lil+ril+vil+liu+riu+viu+lc0+rc0+mc0+vc0+list(up_inf)
   T=struct.pack(f"{{len(Ta)}}H",*Ta)
   Sb=struct.pack(f"{{len(S)}}H",*S)
-  O=bytearray(280000);ob=(ctypes.c_uint8*280000).from_buffer(O)
+  O=bytearray(1000000);ob=(ctypes.c_uint8*1000000).from_buffer(O)
   lib=ctypes.CDLL(sp_f)
-  fn=lib.dec;fn.argtypes=[ctypes.c_char_p,ctypes.c_char_p,ctypes.c_char_p,ctypes.c_char_p,ctypes.c_void_p]
-  n=fn(Q,B[:o_t],T,Sb,ob)
-  Ob=bytes(O[:n]).decode("latin-1");i=0;prev=""
-  while i<n:
-   p=O[i];sl=O[i+1];inf=O[i+2];j=i+3;w=prev[:p]+Ob[j:j+sl];i=j+sl;D.append(w);prev=w
-   for op in MOPS[inf]:D.extend(app(w,op))
+  fn=lib.dec;fn.argtypes=[ctypes.c_char_p,ctypes.c_char_p,ctypes.c_char_p,ctypes.c_char_p,ctypes.c_char_p,ctypes.c_void_p]
+  n=fn(Q,B[:o_t],T,Sb,B[o_t+334:],ob)
+  sys.stdout.buffer.write(memoryview(O)[:n]);return
  except Exception:
+  o=o_t+334;MOPS=[];D=[]
+  for _ in range(200):k=B[o];MOPS.append(tuple(B[o+1:o+1+k]));o+=1+k
+  PRE="un re dis in de over mis non pre out under sub im en be".split()
+  def cy(w):return len(w)>1 and w[-1]=="y" and w[-2] not in "aeiou"
+  def pl(w):
+   if not w[0].isupper():
+    if w.endswith(("s","x","z","ch","sh")):return w+"es"
+    if cy(w):return w[:-1]+"ies"
+   return w+"s"
+  def ed(w):return w+"d" if w[-1]=="e" else((w[:-1]+"ied") if cy(w) else w+"ed")
+  def ing(w):return(w[:-1]+"ing") if(w[-1]=="e" and not w.endswith(("ee","ye","oe"))) else w+"ing"
+  def er(w):return w+"r" if w[-1]=="e" else((w[:-1]+"ier") if cy(w) else w+"er")
+  def est(w):return w+"st" if w[-1]=="e" else((w[:-1]+"iest") if cy(w) else w+"est")
+  def ly(w):
+   if cy(w):return w[:-1]+"ily"
+   if w.endswith("le") and len(w)>2 and w[-3] not in "aeiou":return w[:-1]+"y"
+   return w+"ally" if w.endswith("ic") else w+"ly"
+  def al(w):return(w[:-1]+"al") if w[-1]=="e" else((w[:-1]+"ial") if w[-1]=="y" else w+"al")
+  def ic(w):return(w[:-1]+"ic") if w[-1] in "ey" else w+"ic"
+  def ab(w):return(w[:-1]+"able") if(w[-1]=="e" and not w.endswith(("ee","ce","ge"))) else w+"able"
+  def app(w,op):
+   if op>=37:return(PRE[op-37]+w,)
+   if op<4:return(w+"\'s",pl(w),ed(w),ing(w))[op:op+1]
+   if op==4:e=er(w);return(e,e+"\'s",pl(e))
+   if op<8:return(er(w),est(w),ly(w))[op-5:op-4]
+   if op==8:n=(w[:-1]+"iness") if cy(w) else w+"ness";return(n,n+"\'s")
+   if op==9:j=(w[:-1] if w[-1]=="e" else w)+"ion";return(j,j+"\'s",pl(j))
+   if op==10:t=w+"ment";return(t,t+"\'s",pl(t))
+   if op==11:return(ab(w),)
+   if op<15:return("un"+(pl,ed,ing)[op-12](w),)
+   if op<18:return("re"+(pl,ed,ing)[op-15](w),)
+   if op==18:return("dis"+pl(w),)
+   if op==19:t=(w[:-1] if(cy(w) or w[-1]=="e") else w)+"ity";return(t,t+"\'s",pl(t))
+   if op==20:z=(w[:-1] if w[-1]=="e" else w)+"ize";return(z,pl(z),ed(z),ing(z))
+   if op<27:
+    d=w+w[-1]
+    if op==23:e=d+"er";return(e,e+"\'s",pl(e))
+    return(d+("ed","ing","","er","est","y")[op-21],)
+   if op==27:return((w[:-1] if w[-1]=="e" else w)+"y",)
+   if op==28:return(al(w),)
+   if op==29:a=al(w);return(a,ly(a))
+   if op==30:return(ic(w),)
+   if op==31:z=ic(w);return(z,z+"al",z+"ally")
+   if op<34:z=(w[:-1] if w[-1]=="e" else w)+("ive" if op==32 else "ous");return(z,ly(z))
+   return(ing(w)+"ly",) if op==34 else((ab(w)[:-1]+"y",) if op==35 else("un"+ly(w),))
   def i8(o,n):return struct.unpack_from(f"{{n}}b",B,o),o+n
   o=0;qw0,o=i8(o,326);qs1,o=i8(o,ns);qs2,o=i8(o,ns);qs3,o=i8(o,ns);qwm,o=i8(o,{3*U_MAX})
   Es=[]
@@ -657,6 +686,9 @@ def build_and_eval(D, max_fsm, out_path, epochs=165, l1_w=0.80, U_MAX=112):
  sys.stdout.buffer.write(("\\n".join(D)+"\\n").encode("ascii"))
 '''
 
+    cs_lz = lzma.compress(C_SRC.encode("utf-8"), format=lzma.FORMAT_ALONE, filters=[{"id": lzma.FILTER_LZMA1, "preset": 9, "dict_size": 1 << 17}])
+    cs_str, x_cs = encode_utf8_rans(cs_lz)
+
     hdr_raw = struct.pack("<H", len(INNER_CODE)) + INNER_CODE.encode("utf-8") + bin_tables
     hdr_lz = lzma.compress(hdr_raw, format=lzma.FORMAT_ALONE, filters=[{"id": lzma.FILTER_LZMA1, "preset": 9, "dict_size": 1 << 17}])
 
@@ -665,33 +697,37 @@ def build_and_eval(D, max_fsm, out_path, epochs=165, l1_w=0.80, U_MAX=112):
 
     OUTER = (
         "# -*- coding: utf-8 -*-\n"
-        "import gc,lzma,sys;gc.disable()\n"
+        "import gc,lzma,os,subprocess,sys,tempfile;gc.disable()\n"
         f"U=\"{u_str}\"\n"
+        f"CS=\"{cs_str}\"\n"
         "C=[0]*128;k=0\n"
         "for i in range(1,128):\n"
         " if i not in(10,13,34,92):C[i]=k<<14;k+=1\n"
-        "R=2322432;O2=2015232;O3=2260992;U0=(1<<40)//R\n"
-        "B1=U0<<22;B2=U0<<15;B3=U0<<8\n"
-        f"x={x_end}\n"
-        "o=bytearray()\n"
-        "for ch in U[::-1]:\n"
-        " c=ord(ch)\n"
-        " if c<128:\n"
-        "  while x>=B1:o.append(x&255);x>>=8\n"
-        "  x=(x>>14)*R+C[c]+(x&16383)\n"
-        " elif c<2048:\n"
-        "  while x>=B2:o.append(x&255);x>>=8\n"
-        "  x=(x>>7)*R+O2+((c-128)<<7)+(x&127)\n"
-        " else:\n"
-        "  while x>=B3:o.append(x&255);x>>=8\n"
-        "  x=x*R+O3+(c-2048 if c<55296 else c-4096)\n"
-        "o.extend((x-(1<<40)).to_bytes(5,'big')[::-1])\n"
-        "A=bytes(o[::-1])\n"
+        "def D(s,x):\n"
+        " R=2322432;O2=2015232;O3=2260992;U0=(1<<40)//R;B1=U0<<22;B2=U0<<15;B3=U0<<8;o=bytearray();ap=o.append\n"
+        " for c in map(ord,s[::-1]):\n"
+        "  if c<128:\n"
+        "   while x>=B1:ap(x&255);x>>=8\n"
+        "   x=(x>>14)*R+C[c]+(x&16383)\n"
+        "  elif c<2048:\n"
+        "   while x>=B2:ap(x&255);x>>=8\n"
+        "   x=(x>>7)*R+O2+((c-128)<<7)+(x&127)\n"
+        "  else:\n"
+        "   while x>=B3:ap(x&255);x>>=8\n"
+        "   x=x*R+O3+(c-2048 if c<55296 else c-4096)\n"
+        " o.extend((x-(1<<40)).to_bytes(5,'big')[::-1]);return bytes(o[::-1])\n"
+        "sp_f=os.path.join(tempfile.gettempdir(),'dc_'+str(os.getpid())+('.dll' if os.name=='nt' else '.so'));pr=None\n"
+        "try:\n"
+        f" cb=lzma.decompress(D(CS,{x_cs}))\n"
+        " pr=subprocess.Popen(['gcc','-O0','-pipe','-shared']+([] if os.name=='nt' else ['-fPIC'])+['-x','c','-','-o',sp_f],stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+        " pr.stdin.write(cb);pr.stdin.close()\n"
+        "except Exception:pr=None\n"
+        f"A=D(U,{x_end})\n"
         "hl=A[0]|(A[1]<<8)\n"
         "B=lzma.decompress(A[2:2+hl])\n"
         "L=B[0]|(B[1]<<8);ns={}\n"
         "exec(B[2:2+L],ns)\n"
-        "ns['solve'](A[2+hl:],B[2+L:])\n"
+        "ns['solve'](A[2+hl:],B[2+L:],pr,sp_f)\n"
     )
     with open(out_path, "wb") as f:
         f.write(OUTER.encode("utf-8"))
