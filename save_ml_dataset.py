@@ -2,8 +2,9 @@ import gc, math, os, pickle, time
 from collections import Counter, defaultdict
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DICT_PATH = os.path.join(HERE, "dict.txt")
-OUT_PATH = os.path.join(HERE, "ml_dataset.pkl")
+BASE_DIR = HERE if os.path.exists(os.path.join(HERE, "dict.txt")) else r"C:\dev\ML"
+DICT_PATH = os.path.join(BASE_DIR, "dict.txt")
+OUT_PATH = os.path.join(BASE_DIR, "ml_dataset.pkl")
 
 with open(DICT_PATH, "r", encoding="ascii") as f:
     words = f.read().splitlines()

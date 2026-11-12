@@ -3,8 +3,9 @@ from collections import Counter, defaultdict
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DATASET_PATH = os.path.join(HERE, "ml_dataset.pkl")
-DICT_PATH = os.path.join(HERE, "dict.txt")
+BASE_DIR = HERE if os.path.exists(os.path.join(HERE, "dict.txt")) else r"C:\dev\ML"
+DATASET_PATH = os.path.join(BASE_DIR, "ml_dataset.pkl")
+DICT_PATH = os.path.join(BASE_DIR, "dict.txt")
 
 import heapq
 
@@ -878,4 +879,4 @@ def build_and_eval(D, max_fsm, out_path, epochs=165, l1_w=0.80, U_MAX=112):
     st = sorted(times)
     print(f"  -> min={min(times):.1f} ms | median={(st[2]+st[3])/2:.1f} ms | max={max(times):.1f} ms", flush=True)
 
-build_and_eval(3, 160, os.path.join(HERE, "solve.py"), epochs=190, l1_w=0.95, U_MAX=112)
+build_and_eval(3, 160, os.path.join(BASE_DIR, "solve.py"), epochs=190, l1_w=0.95, U_MAX=112)
