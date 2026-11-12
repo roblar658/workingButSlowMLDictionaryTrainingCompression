@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.exe
+*.o
+*.obj
+*.dll
+*.so
+*.dylib
+*.log

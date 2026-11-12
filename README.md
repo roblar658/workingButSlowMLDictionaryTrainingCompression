@@ -8,40 +8,171 @@
 
 This repository contains standalone, lossless dictionary compressors and self-extracting solvers in both **Python 3** ([`solve.py`](solve.py)) and **C++20** ([`solve.cpp`](solve.cpp)) for [`dict.txt`](dict.txt) (`972,104` bytes, `102,399` English words):
 
-| Metric | Python (`solve.py`) | C++20 (`solve.cpp`) |
+| Metric | Python ([`solve.py`](solve.py), Dual-Tier PAQ / C-Bridge) | C++20 ([`solve.cpp`](solve.cpp), Single-Core `RemOnly`) |
 |---|---|---|
-| Standalone UTF-8 file size | **`89,234` B (`87.14 KiB`)** (`9.18%` of input) | **`89,955` B (`87.85 KiB`)** (`9.25%` of input) |
-| External compression libraries | **None** (zero `lzma`, zero `zlib`, zero `tempfile`) | **None** (standard C++20 `<cmath>`, `<cstdint>`, `<cstdio>`, `<cstring>`) |
-| Compile time | Runtime parallel `gcc -O0 -pipe -shared -s` | `705.5 ms` (`g++ -O2 -std=c++20 -Wall -Wextra -Wbidi-chars=any`, 0 warnings) |
-| Cold runtime (`min` / `median` / `max`) | **`233.8 ms` / `244.6 ms` / `294.7 ms`** | **`27.3 ms` / `30.6 ms` / `1604.6 ms`** (`27.3–33.6 ms` after initial AV scan) |
-| Pure-Python fallback (no `gcc`) | `737.4 ms` (exact lossless output) | — |
-| Raw payload (`bin_tot`) | `73,848 B` + `cs_b = 3,682 B` (`ml_bin=67,370 B`, `w_b=1,790 B`, `m_b=1,423 B`, `py_b=3,259 B`) | `70,587 B` (`ml_bin=67,370 B`, `w_b=1,790 B`, `m_b=1,423 B` + 4 B header) |
+| Standalone UTF-8 file size | **`89,234` B (`87.14 KiB`)** (`9.18%` of input, `+878 B` headroom) | **`89,975` B (`87.87 KiB`)** (`9.26%` of input, `+137 B` headroom) |
+| External compression / build deps | **None** (pure Python stdlib + optional background C-acceleration bridge with zero-dependency fallback) | **None** (zero threads, zero pthreads, zero OpenMP, standard `<cmath>`, `<cstdint>`, `<cstdio>`, `<cstring>`) |
+| Compile time | **None** (runtime standalone script) | `1.15–1.40 s` (`g++ -O2 -std=c++20 -Wall -Wextra -Wbidi-chars=any`, 0 warnings) |
+| Warm subprocess wall (`min` / `median`) | **`~0.27–0.32 s` / `~0.35 s`** (exact lossless match, 0 bidi warnings) | **`12.80 ms` / `13.40 ms`** (quiet warm runs) |
+| Internal core runtime (`clock_gettime`) | — | **`8.87 ms` (min) / `8.99 ms` (median)** with `-O3` (**`~2.0x` single-core speedup** vs `44e41a2` baseline) |
+| Raw payload (`bin_tot`) | `73,848 B` (`ml_bin=67,370 B`, `cs_b=3,682 B`, `w_b=1,790 B`, `m_b=1,423 B`, `py_b=3,259 B`) | `74,012 B` (`ml_bin=57,112 B`, `meta_lz=1,217 B`, `pci_b=15,675 B` + 8 B header) |
 
 ---
 
-## Benchmark Results (Python vs C++)
+## Architecture & Pipeline Flowcharts
 
-All runs verified byte-for-byte (`exact_match=True`) against [`dict.txt`](dict.txt) (`972,104` bytes, `102,399` words) on Windows 11 (MinGW-W64 GCC `15.2.0`, Python `3.13`):
+### 1. End-to-End Compression Pipeline
 
-| Run | `python solve.py` (`89,234 B`) | Compiled `solve.cpp` (`89,955 B`, compiled in `705.5 ms`) |
-|---|---|---|
-| Run 1 | `294.7 ms` (`rc=0`, `exact=True`) | `1604.6 ms` (`rc=0`, `exact=True`, initial AV scan of fresh `.exe`) |
-| Run 2 | `233.8 ms` (`rc=0`, `exact=True`) | `33.6 ms` (`rc=0`, `exact=True`) |
-| Run 3 | `235.9 ms` (`rc=0`, `exact=True`) | `32.1 ms` (`rc=0`, `exact=True`) |
-| Run 4 | `244.7 ms` (`rc=0`, `exact=True`) | `27.3 ms` (`rc=0`, `exact=True`) |
-| Run 5 | `245.1 ms` (`rc=0`, `exact=True`) | `29.0 ms` (`rc=0`, `exact=True`) |
-| Run 6 | `244.5 ms` (`rc=0`, `exact=True`) | `27.7 ms` (`rc=0`, `exact=True`) |
-| **Summary** | **`min = 233.8 ms` \| `median = 244.6 ms`** | **`min = 27.3 ms` \| `median = 30.6 ms`** (`27.3–33.6 ms` steady) |
+```mermaid
+flowchart TD
+    DICT["dict.txt (102,399 words, 972 KB)"] --> DISCOV["Morphological Operator Discovery (52 rules)"]
+    DISCOV --> GRAPH["Derivation Graph Partitioning"]
+    GRAPH --> COVER_DP["Exact Cover DP (Tree DP + Bitmask Subset DP)"]
+    COVER_DP --> DATASET["ml_dataset.pkl (35,364 base words + 200 inflection masks)"]
+
+    DATASET --> ROUTER["Context Router (Decompose into p, c0, rem, inf)"]
+
+    ROUTER --> TARGET_CPP["C++ Pipeline (solve.cpp)"]
+    ROUTER --> TARGET_PY["Python Pipeline (solve.py)"]
+
+    subgraph "C++ Neural PAQ Pipeline"
+        TARGET_CPP --> RANS_CPP["Unified Context rANS (p, c0, inf - RP 143x256)"]
+        TARGET_CPP --> PAQ_CPP["3-Order Bit-FSM + Logistic Model (418k bits)"]
+        PAQ_CPP --> ADAM_CPP["Adam Optimizer & int8 Quantization (T1, T2, T3)"]
+        ADAM_CPP --> RANGE_CPP["32-bit Multi-Precision Range Encoder"]
+        RANS_CPP & RANGE_CPP --> LZSS_CPP["DP-Optimal LZSS (Metadata & Bytecode)"]
+        LZSS_CPP --> UTF8_CPP["Mixed-Radix Non-Bidi UTF-8 (R literal)"]
+        UTF8_CPP --> SOLVE_CPP["solve.cpp (89,975 B, 9ms runtime)"]
+    end
+
+    subgraph "Python Dual-Tier Pipeline"
+        TARGET_PY --> PAQ_PY["PAQ 160-state Bit-FSM Model"]
+        TARGET_PY --> BRIDGE_PY["Dual-Tier C-Bridge / Python Fallback Engine"]
+        PAQ_PY & BRIDGE_PY --> LZSS_PY["DP-Optimal LZSS Compressor"]
+        LZSS_PY --> UTF8_PY["Safe Non-Bidi UTF-8 String Literal"]
+        UTF8_PY --> SOLVE_PY["solve.py (89,234 B, 0.35s runtime)"]
+    end
+
+    SOLVE_CPP --> LOSSLESS["Exact Lossless Reconstruction (100% SHA-256 match)"]
+    SOLVE_PY --> LOSSLESS
+```
 
 ---
 
-## Repository Files
+### 2. Morphological Cover Dynamic Programming
 
-1. [`save_ml_dataset.py`](save_ml_dataset.py) — Constructs the morphological derivation graph over [`dict.txt`](dict.txt), discovers the top `200` inflection/derivation bitmasks, and solves a multi-tier **Dynamic Programming** Exact Cover / Dominating-Mask optimization (`35,364` base words, `112,375` suffix characters) written to [`ml_dataset.pkl`](ml_dataset.pkl).
-2. [`mlDictionaryTrainingCompression.py`](mlDictionaryTrainingCompression.py) — Builds optimal prefix/alphabetic trees (Knuth-Yao DP + Canonical Huffman), trains the 3-order PAQ-style bit-level FSM + quantized ReLU neural predictor (`190` Adam epochs + cosine annealing + $L_1 = 0.95$), compresses auxiliary tables/code with 4-pass **DP-optimal LZSS + Order-0 rANS**, packs everything into valid UTF-8 via mixed-radix rANS, and emits [`solve.py`](solve.py).
-3. [`mlDictionaryTrainingCompressionCpp.py`](mlDictionaryTrainingCompressionCpp.py) — Same DP + quantized FSM/NN + DP-LZSS/rANS training pipeline emitting a pure standalone zero-dependency **C++20** source [`solve.cpp`](solve.cpp) encoded over a non-bidi UTF-8 `R"!(...)!"` alphabet (no `cs_b`, no `py_b`, zero `-Wbidi-chars` warnings).
-4. [`solve.py`](solve.py) — Self-contained UTF-8 Python 3 decoder. Overlaps `gcc -O0 -pipe -shared -s` compilation of the embedded C range/NN/sort engine with Python payload decoding, falling back to pure Python if `gcc` is absent.
-5. [`solve.cpp`](solve.cpp) — Self-contained UTF-8 C++20 decoder (`<cmath>`, `<cstdint>`, `<cstdio>`, `<cstring>`, static `.bss` buffers with zero heap vectors, binary stdout `_O_BINARY` on Windows).
+```mermaid
+flowchart LR
+    subgraph "Derivation Graph Analysis"
+        W1["Word Component (e.g. play, plays, played, player, replay)"]
+        RULES["52 Morphological Rules (phi_0 .. phi_51)"]
+        W1 --> RULES
+    end
+
+    subgraph "Exact DP Partitioning"
+        RULES --> CHECK{"Component Topology"}
+        CHECK -->|"Tree (|E| = |V| - 1)"| TREE_DP["Bottom-Up Tree DP (covP, covSelf, up, covChild)"]
+        CHECK -->|"Small Cyclic (|V| <= 20)"| BITMASK_DP["Exact Bitmask Subset DP (2^|V| state space)"]
+        CHECK -->|"Dense Component"| GREEDY_DP["Iterative Closed-Group Window DP"]
+    end
+
+    subgraph "Optimal Partition"
+        TREE_DP & BITMASK_DP & GREEDY_DP --> BASES["35,364 Base Words (LCP prefix encoded)"]
+        TREE_DP & BITMASK_DP & GREEDY_DP --> MASKS["200 Pre-Folded Derivation Bitmasks"]
+    end
+```
+
+---
+
+### 3. Runtime Solver Decompression Architecture
+
+```mermaid
+flowchart TD
+    subgraph "C++ Solver (solve.cpp - 8.9ms)"
+        U_CPP["Embedded UTF-8 Literal (R-string)"] --> DEC_UTF8_C["rANS Mixed-Radix UTF-8 Decoder"]
+        DEC_UTF8_C --> BLOB_C["Binary Blob (Bytecode, Quantized Weights, Streams)"]
+        BLOB_C --> LZSS_DEC_C["DP-LZSS Decompressor (Metadata & Affix VM)"]
+        LZSS_DEC_C --> T_INLINE["Inlined Folded Tables: T1, T2, T3 (L2 Cache Resident)"]
+        BLOB_C --> RANS_DEC_C["Interleaved Single-Stream rANS: p, c0, inf"]
+        BLOB_C --> RANGE_DEC_C["Zero-NN PAQ 32-bit Range Decoder: rem"]
+        RANS_DEC_C & RANGE_DEC_C --> STEM_C["Direct Stem Reassembly (W buffer)"]
+        STEM_C --> AP_VM["Affix Expansion Virtual Machine (AP)"]
+        AP_VM --> RADIX_C["Fast 8-byte Radix Sort & Unaligned Copy"]
+        RADIX_C --> STDOUT_C["Direct fwrite to stdout"]
+    end
+
+    subgraph "Python Solver (solve.py - 0.35s)"
+        U_PY["Embedded UTF-8 String (U)"] --> DEC_UTF8_PY["Pure-Python Mixed-Radix UTF-8 Decoder"]
+        DEC_UTF8_PY --> BLOB_PY["Binary Blob (Weights, Python bytecode, Bitstream)"]
+        BLOB_PY --> LZSS_DEC_PY["DP-LZSS Python Decompressor"]
+        LZSS_DEC_PY --> C_BRIDGE{"GCC available in background?"}
+        C_BRIDGE -->|"Yes (gcc Popen)"| SHARED_LIB["Compile & Load Micro C Shared Library"]
+        C_BRIDGE -->|"No (Fallback)"| PURE_PY["Instant Pure-Python Decompression Engine"]
+        SHARED_LIB & PURE_PY --> EXPAND_PY["Morphological Affix Expansion (pl, ed, ing, ...)"]
+        EXPAND_PY --> TIMSORT_PY["Native Python Timsort"]
+        TIMSORT_PY --> STDOUT_PY["sys.stdout.write"]
+    end
+```
+
+---
+
+## Modular Code Architecture (`compressor/` Package)
+
+To ensure clean separation of concerns, transparency, and reusability, all non-solver logic is organized into a modular package:
+
+```
+gh_repo/
+├── compressor/                     # Core compression & generation framework
+│   ├── __init__.py                 # Top-level package exports
+│   │
+│   ├── morphology/                 # Word analysis & graph partition
+│   │   ├── __init__.py
+│   │   ├── operators.py            # MorphologicalRules: 52 derivation & inflection rules
+│   │   ├── cover_dp.py             # ExactCoverDP: Tree DP & Bitmask Subset DP solvers
+│   │   └── dataset.py              # DatasetBuilder: Graph builder & candidate mask selection
+│   │
+│   ├── models/                     # Statistical & machine-learning modeling
+│   │   ├── __init__.py
+│   │   ├── paq_fsm.py              # PAQBitFSM: 80/160 state bit-history finite state machine
+│   │   ├── context_router.py       # ContextRouter: Causal (p, c0, rem, inf) routing & hashing
+│   │   └── neural_trainer.py       # NeuralLogisticTrainer: Adam, int8 quantization, range encoder
+│   │
+│   ├── encoding/                   # Entropy coding primitives
+│   │   ├── __init__.py
+│   │   ├── huffman.py              # CanonicalHuffman: Canonical tree generation & lengths
+│   │   ├── rans.py                 # RangeANS: Order-0 & unified multi-context rANS
+│   │   ├── lzss.py                 # DPOptimalLZSS: 4-pass rate-distortion optimal LZSS
+│   │   └── utf8_rans.py            # UTF8Encoder: Non-bidi safe mixed-radix stream encoders
+│   │
+│   └── codegen/                    # Standalone self-extracting code generators
+│       ├── __init__.py
+│       ├── cpp_generator.py        # CppSolverGenerator: Emits self-contained solve.cpp
+│       └── py_generator.py         # PySolverGenerator: Emits self-contained solve.py
+│
+├── save_ml_dataset.py              # CLI: Discovers cover rules and creates ml_dataset.pkl
+├── mlDictionaryTrainingCompressionCpp.py # CLI: Trains C++ model and generates solve.cpp
+├── mlDictionaryTrainingCompression.py    # CLI: Trains Python model and generates solve.py
+├── solve.cpp                       # Verified standalone C++ solver (89,975 B, ~9ms)
+├── solve.py                        # Verified standalone Python solver (89,234 B, ~0.35s)
+├── dict.txt                        # Target dictionary (102,399 words, 972,104 bytes)
+└── README.md                       # Architecture documentation & benchmarks
+```
+
+---
+
+## Single-Core Benchmark (Baseline `44e41a2` vs New `RemOnly` Solver)
+
+All runs verified byte-for-byte (`exact=True`, `fc.exe /b` = 0 differences) against [`dict.txt`](dict.txt) (`972,104` bytes, `102,399` words) on Windows 11 (MinGW-W64 GCC `15.2.0`, single CPU core):
+
+### Interleaved Single-Core Benchmark (15 Warm Runs, `clock_gettime(CLOCK_MONOTONIC)`)
+
+| Implementation | Compiler Flags | File Size | `min` | `p25` | `median` | `p75` | `max` | Speedup vs Baseline |
+|---|---|---|---|---|---|---|---|---|
+| Baseline C++ (`44e41a2`, `K=1`) | `g++ -O2 -std=c++20` | `89,955 B` (`87.85 KiB`) | `17.41 ms` | `17.71 ms` | `17.83 ms` | `18.00 ms` | `18.64 ms` | `1.00x` (baseline) |
+| **New C++ (`RemOnly`, `solve.cpp`)** | `g++ -O2 -std=c++20` | **`89,975 B` (`87.87 KiB`)** | **`9.09 ms`** | **`9.14 ms`** | **`9.16 ms`** | **`9.19 ms`** | **`9.25 ms`** | **`1.92x` (min) / `1.95x` (med)** |
+| **New C++ (`RemOnly`, `solve.cpp`)** | `g++ -O3 -std=c++20` | **`89,975 B` (`87.87 KiB`)** | **`8.87 ms`** | **`8.95 ms`** | **`8.99 ms`** | **`9.08 ms`** | **`9.28 ms`** | **`1.96x` (min) / `1.98x` (med)** |
+
+*Under normal background desktop load conditions, baseline wall time often throttles to `31–34 ms`, where the new solver executes in `13.8–15.2 ms` (**`> 2.2x` faster**).*
 
 ---
 
@@ -51,114 +182,35 @@ The compression pipeline minimizes the Kolmogorov-style joint description length
 
 $$L_{\text{total}} = L_{\text{struct}}(\text{bases}, \text{masks}) + L_{\text{model}}(\theta_q) + L_{\text{data}}(\text{bitstream} \mid \theta_q) + L_{\text{code}}(\text{C} + \text{Py}) + L_{\text{UTF8}}$$
 
-across five tightly coupled mathematical stages.
+across five tightly coupled mathematical stages:
 
----
+### 1. Morphological Derivation Graph & Dynamic Programming Cover
+We define $N_{\text{ops}} = 52$ deterministic English morphological operators $\phi_0, \dots, \phi_{51} : \Sigma^* \to \mathcal{P}(\Sigma^*)$ covering apostrophe-s, regular/irregular plurals, `-ed`, `-ing`, `-er`, `-est`, `-ly`, `-ness`, `-ion`, `-ment`, `-able`, `-ity`, `-ize`, consonant doubling, `-y`/`-al`/`-ic`/`-ive`/`-ous`, combined `un-`/`re-`/`dis-` inflections, and 15 standalone prefixes.
 
-### 1. Morphological Derivation Graph & Dynamic Programming Cover (`save_ml_dataset.py`)
-
-We define $N_{\text{ops}} = 52$ deterministic English morphological operators $\phi_0, \dots, \phi_{51} : \Sigma^* \to \mathcal{P}(\Sigma^*)$ covering apostrophe-s, regular/irregular plurals, `-ed`, `-ing`, `-er` (+ `'s`/plural), `-est`, `-ly`, `-ness`, `-ion`, `-ment`, `-able`, `-ity`, `-ize`, consonant doubling, `-y`/`-al`/`-ic`/`-ive`/`-ous`, combined `un-`/`re-`/`dis-` inflections, and 15 standalone prefixes.
-
-Each word $w \in D$ ($|D| = 102,399$) induces a candidate set of valid bitmasks $m \in \mathcal{M}$ ($|\mathcal{M}| = 200$, restricted to $m \subseteq \lbrace 0,1\rbrace$ for capitalized proper nouns) such that every generated word $d \in \bigcup_{j \in m} \phi_j(w)$ satisfies $d \in D \setminus \lbrace w\rbrace$ with no self-collisions. Forming the undirected graph $G = (D, E)$ where $(w, d) \in E$ whenever $d$ can be generated by some candidate mask of $w$, finding a lossless morphological cover partitions $D$ into disjoint stars rooted at base words $B \subseteq D$:
+Finding a lossless morphological cover partitions $D$ into disjoint stars rooted at base words $B \subseteq D$:
 
 $$D = \bigsqcup_{b \in B} \big(\lbrace b\rbrace \cup \Delta(b, m_b)\big), \qquad \text{minimize } \sum_{b \in B} c(b, m_b)$$
 
-with estimated coding cost $c(b, m) = 18.0 + 1.5|b| - \log_2 \hat{P}(m)$. After greedy initialization to discover the 200-mask vocabulary, connected components of $G$ are solved by three exact DP regimes:
+Solved via exact bottom-up Tree DP for tree components, exact Bitmask Subset DP for small cyclic components ($|V| \le 20$), and iterative closed-group DP for larger components, reducing the base dictionary to **$35,364$ bases** and **$112,375$ suffix characters**.
 
-- **Tree components ($|E| = |V| - 1$):** Rooted at $\arg\min_v |v|$, exact bottom-up Tree DP tracks four states per node $u$:
-  - $DP_{\text{covP}}[u]$: $u$ is already covered by its parent $\pi(u)$; children solve independently.
-  - $DP_{\text{covSelf}}[u]$: $u$ is chosen as a base with mask $m$ covering a subset $S_u \subseteq \text{Ch}(u)$ (and not $\pi(u)$), minimizing $c(u, m) + \sum_{v \in S_u} DP_{\text{covP}}[v] + \sum_{v \in \text{Ch}(u)\setminus S_u} \min(DP_{\text{covSelf}}[v], DP_{\text{covChild}}[v])$.
-  - $DP_{\text{up}}[u]$: $u$ is chosen as a base and covers its parent $\pi(u)$.
-  - $DP_{\text{covChild}}[u]$: $u$ is covered by exactly one child $v_c \in \text{Ch}(u)$ in state $DP_{\text{up}}[v_c]$.
-- **Small cyclic / DAG components ($|V| \le 21$):** Exact bitmask subset DP over $bm \in \lbrace 0, \dots, 2^{|V|}-1\rbrace$, branching solely on covers $cm$ that include the lowest uncovered bit $v_i = \text{lsb}(M_{\text{full}} \oplus bm)$ and satisfy $(cm \land bm) = 0$:
-  $$F(bm) = \min_{(u, cm) : v_i \in cm,\, cm \cap bm = \emptyset} \big[ c(u, m_{u,cm}) + F(bm \cup cm) \big]$$
-- **Large components ($|V| > 21$):** Iterative closed-group Exact Bitmask DP over BFS neighborhoods of up to $14$ vertices, replacing greedy local assignments whenever $F_{\text{sub}}(0) < C_{\text{old}} - 10^{-6}$.
-
-This reduces the base dictionary to **$35,364$ bases** and **$112,375$ suffix characters** (saving ~400+ bases and ~1,300+ suffix characters over greedy cover alone) with guaranteed exact bijective reconstruction of all `102,399` words.
-
----
-
-### 2. Lexicographical Front-Coding & Knuth-Yao Optimal Alphabetic Tree DP
-
+### 2. Suffix Decomposition & Causal Context Routing
 Sorted base words $w_0 < w_1 < \dots < w_{N_B - 1}$ are decomposed into `(p_i, c0_i, rem_i, inf_i)`:
+1. **Prefix length $p_i = \text{LCP}(w_{i-1}, w_i) \in [0, 19]$:** Decoded via static rANS conditioned on $48$ compact contexts.
+2. **First differing character $c_{0,i} = w_i[p_i]$:** Decoded via $55$ contexts keyed by previous character location.
+3. **Suffix remainder (`rem_i`) + `EOW`:** Handled by the 3-order PAQ bit-FSM predictor in C++ and entropy-quantized context models in Python.
+4. **Inflection mask index $\text{inf}_i$:** Decoded conditioning on uppercase status and trailing character n-grams.
 
-1. **Prefix length $p_i = \text{LCP}(w_{i-1}, w_i) \in [0, 19]$:** Encoded with a 20-symbol Canonical Huffman tree (`19` internal nodes). Using the invariant that strictly increasing order forbids reusing a prefix position whose character in $w_{i-1}$ is already the maximum alphabet symbol `'z'` (index `52`), a 20-bit validity mask `vp` and precomputed subtree mask `leaf_mask[u]` prune impossible internal branches at zero bit cost (`(lm[left[u]] & vp) == 0`).
-2. **First differing character $c_{0,i} = w_i[p_i] \in \lbrace 0, \dots, 52\rbrace$ (`'`, `A-Z`, `a-z`):** Requires an order-preserving binary code tree so the decoder can enforce $c_{0,i} > w_{i-1}[p_i]$ (`lo`) without wasting bits on infeasible left subtrees. Because symbol frequencies $f_0, \dots, f_{K-1}$ ($K = 53$) are skewed, we solve the **Optimal Alphabetic Binary Search Tree** recurrence over interval $[i, j]$:
-   $$\text{dp}[i][j] = W(i, j) + \min_{k = i}^{j - 1} \big(\text{dp}[i][k] + \text{dp}[k+1][j]\big), \qquad W(i, j) = \sum_{r=i}^{j} \max(1, f_r)$$
-   By the **Knuth-Yao quadrangle inequality**, optimal split indices satisfy monotonicity $\text{opt}[i][j-1] \le \text{opt}[i][j] \le \text{opt}[i+1][j]$, reducing construction from $O(K^3)$ to $O(K^2)$. Serialized as a `52`-byte pre-order midpoint array `mc0`, each decision checks `if lo > mc0[u]: u = rc0[u]`, skipping pruned bits entirely.
-3. **Suffix remainder + `EOW` (`54` symbols) and Inflection Masks (`200` lowercase, `4` uppercase):** Canonical Huffman bit-trees (`53`, `199`, `3` internal nodes).
+### 3. PAQ-Style 3-Order Bit-FSM (`solve.cpp` Single-Core Architecture)
+- **Collision-Free Direct $F_2$ Indexing:** $\text{idx}_{F_2} = (c_2 \cdot 64 + c_1) \cdot 64 + u$ ($225,280$ bytes), eliminating hash operations.
+- **L2 Cache Residency:** Sizing $F_3$ to $2^{18} + 53 = 262,197$ bytes keeps the entire active working set ($\approx 529$ KB) resident in L2 cache.
+- **Inlined Folded Tables:** $T_1$, $T_2$, and $T_3$ pre-fold weights, biases, and padding so logit computation is a single 3-term addition: $\text{logit}_d = T_1[u][s_1] + T_2[u][s_2] + T_3[u][s_3]$.
+- **Half-Range Sigmoid:** Startup initialization is restricted to $|i - \text{sig\_pad}| \le 850$, reducing startup time to $< 0.18$ ms.
 
-Total internal binary decision nodes:
+### 4. Custom DP-Optimal LZSS + Static rANS
+Auxiliary metadata and bytecode are parsed using 4-pass backward dynamic programming evaluating optimal literal vs match parsing ($l \in [3, 288]$, $d \le 32,767$) with dynamic Shannon entropy feedback.
 
-$$H_0 = 19 + 52 + 53 + 199 + 3 = 326$$
-
----
-
-### 3. PAQ-Style 3-Order Bit-FSM + Quantized Neural Bit-Model
-
-Every active bit $y_t \in \lbrace 0, 1\rbrace$ at tree node $\text{nid}_t \in \lbrace 0, \dots, 325\rbrace$ is predicted online from exact causal decoder history.
-
-#### Multi-Context Finite-State Machines
-Three context tables `FS1` ($55 \times 512$), `FS2` ($2^{18} + H_0$), and `FS3` ($2^{19} + H_0$) map `(context, nid)` to 1-byte states $s_k \in \lbrace 0, \dots, N_{\text{FSM}}-1\rbrace$ ($N_{\text{FSM}} = 160$) tracking snapped `(c0, c1)` 0/1 run counts with deterministic update tables `NX0`, `NX1` and Knuth multiplicative mixing:
-
-$$\text{mix}(h) = (h \cdot \text{0x9E3779B1}_{32}) \oplus \big((h \cdot \text{0x9E3779B1}_{32}) \gg 16\big)$$
-
-#### Symbol-Level ReLU Neural Network (`D = 3`, `U_MAX = 112`)
-Once per symbol (shared across its tree bits), 6 discrete context features $(f_0, \dots, f_5)$ index six $D = 3$ embedding tables:
-
-$$h = \max\Big(0, E_{c0}[f_0] + E_{c1}[f_1] + E_{c2}[f_2] + E_{p0}[f_3] + E_{p1}[f_4] + E_{\text{aux}}[f_5]\Big) \in \mathbb{R}^3$$
-
-Per-bit nodes are mapped via $u = \text{unid}[\text{nid}] \in \lbrace 0, \dots, 111\rbrace$ (exact weights for the top $111$ most frequent bit-nodes, shared bucket `111` for the rest). The combined bit logit is:
-
-$$z_t = w_0[\text{nid}_t] + \sum_{k=1}^{3} W_m[u, k] S_k[s_k] + \langle U[u], h \rangle$$
-
-Trained over `190` full-batch Adam epochs ($\beta_1 = 0.9, \beta_2 = 0.999$, cosine decay $\eta \in [0.001, 0.045]$) minimizing binary cross-entropy + $L_1$ sparsity ($\lambda = 0.95$) on $E_*$ and $U$:
-
-$$\mathcal{L} = -\sum_t \Big[y_t \log \sigma(z_t) + (1 - y_t)\log(1 - \sigma(z_t))\Big] + \lambda \left(\lVert U \rVert_1 + \sum_j \lVert E_j \rVert_1\right)$$
-
-#### Exact Fixed-Point Quantization & Range Coding
-To guarantee bit-exact cross-platform parity between NumPy encoding, compiled C decoding, and Python fallback without floating-point drift, all learned parameters are quantized to signed `int8` with paired scales $(s_s, s_w, s_h, s_u) = (8, 16, 16, 8)$ satisfying $s_w s_s = s_u s_h = 128$:
-
-$$z_{128}(t) = 16 q_{w_0}[\text{nid}_t] + \sum_{k=1}^{3} q_{W_m}[u, k] q_{S_k}[s_k] + \langle q_U[u], h_q \rangle \approx 128 z_t$$
-
-The quantized 12-bit CDF split probability for $b = 0$ is evaluated by lookup into a pre-computed sigmoid table $S$:
-
-$$p_{\text{int}}(t) = \text{clip}\left(\text{round}\left(\frac{4096}{1 + \exp(z_{128}(t)/128)}\right), 1, 4095\right) \in \lbrace 1, \dots, 4095\rbrace$$
-
-driven by a 32-bit carryless binary range coder ($R \in [2^{24}, 2^{32}]$, split $r_1 = (R \gg 12) \cdot p_{\text{int}}$), compressing all $\sim 1.07\text{M}$ base-word & morphology decisions to **`ml_bin = 67,370 B`**.
-
----
-
-### 4. Custom DP-Optimal LZSS + Static rANS (`dp_lzss_enc` / `rans_enc`)
-
-To eliminate `lzma` completely while keeping `solve.py < 88 KiB`, auxiliary payloads (`C_SRC`, `INNER_CODE` compressed with `C_SRC` as a shared prefix dictionary, and `meta_bytes`) are compressed by a custom **4-pass iterative Dynamic Programming LZSS** parser paired with **Order-0 rANS**:
-
-1. **Backward Shortest-Path DP:** For position $i \in \lbrace n-1, \dots, \text{off}\rbrace$ in `prefix + data`, matching offset $d \le 32767$ and candidate lengths $l \in [3, \min(33, l_{\max})] \cup \lbrace l_{\max}\rbrace$:
-   $$\text{dp}[i] = \min\Big(c_{\text{lit}}(x_i) + \text{dp}[i+1], \min_{(d, l)} \big[c_{\text{len}}(l) + c_{\text{dist}}(d) + 8 \cdot \mathbf{1}_{l \ge 34} + \text{dp}[i+l]\big]\Big)$$
-2. **Entropy Feedback:** After each DP pass, token frequencies (`256` literals + `32` length tokens) and distance-bucket frequencies (`db = bit_length(d-1)`) update Shannon cost tables $c(s) = -\log_2\frac{f_s + 0.5}{N + 128}$ for the next pass.
-3. **Table-Driven rANS:** `w_bytes` (quantized `int8` weights) and the LZSS `toks` (`M = 2048`) / `dbkts` (`M = 256`) streams are encoded via asymmetric numeral systems ($x_{\text{next}} = \lfloor x / f_s \rfloor M + (x \bmod f_s) + C_s$, normalized in $[2^{16}, 2^{24})$), decoded cleanly in Python (`rd()` + `dlz()`) in under `4 ms`.
-
----
-
-### 5. Mixed-Radix UTF-8 rANS Source Embedding (`solve.py` vs non-bidi `solve.cpp`)
-
-Rather than Base64 (`6.00` bits/byte, 33% overhead) or UTF-16, the binary payloads are transcoded directly into valid UTF-8 string literals over a 3-class mixed-radix Unicode alphabet.
-
-For [`solve.py`](solve.py) (`encode_utf8_rans`, excluding `\0`, `\n`, `\r`, `"`, `\`, and surrogates `0xD800–0xDFFF`):
-
-| UTF-8 byte width | Codepoint count $N_k$ | Radix divisor $W_k$ | Mass $N_k W_k$ | Bits per UTF-8 byte |
-|---|---|---|---|---|
-| 1-byte safe ASCII | $123$ | $2^{14} = 16,384$ | $2,015,232$ | $\frac{1}{1}\log_2(R/2^{14}) = 7.147$ |
-| 2-byte (`U+0080..U+07FF`) | $1,920$ | $2^{7} = 128$ | $245,760$ | $\frac{1}{2}\log_2(R/2^{7}) = 7.074$ |
-| 3-byte non-surrogate | $61,440$ | $1$ | $61,440$ | $\frac{1}{3}\log_2(R) = 7.049$ |
-
-$$R_{\text{py}} = 123 \cdot 2^{14} + 1920 \cdot 2^{7} + 61440 = 2,322,432, \qquad L = 2^{40}$$
-
-For [`solve.cpp`](solve.cpp) (`encode_utf8_rans_nobidi`), GCC/Clang `-Wbidi-chars=any` flags bidirectional control characters (`U+202A–202E`, `U+2066–2069`, RTL blocks). Using C++ raw literals `R"!(...)!"` lets `"` and `\` pass unescaped while banning only `\0`, `\n`, `\r`, `)` (`124` 1-byte symbols) and restricting 2-byte (`U+0080..U+058F`) and 3-byte (`U+0900..U+1FFF`, `U+2100..U+D7FF`, `U+E000..U+FAFF`) ranges strictly to Left-to-Right blocks:
-
-$$R_{\text{cpp}} = 124 \cdot 2^{14} + 1296 \cdot 2^{7} + 59648 = 2,257,152, \qquad L = 2^{40}$$
-
-Encoding emits one symbol per `divmod(x, R)` step and refills bytes until the stream is exhausted; decoding consumes the reversed string via pure integer shifts, achieving **`> 7.05` bits per UTF-8 file byte** while keeping both `solve.py` and `solve.cpp` strictly valid UTF-8 with zero compiler warnings.
+### 5. Mixed-Radix UTF-8 rANS Source Embedding
+Payloads are packed into high-density UTF-8 characters excluding control characters, quotes, and bidirectional markers (`U+061C`, `U+200E–200F`, `U+202A–202E`, `U+2066–2069`), achieving $> 7.04$ bits per UTF-8 byte with zero compiler warnings under `-Wbidi-chars=any`.
 
 ---
 
@@ -168,12 +220,12 @@ Encoding emits one symbol per `divmod(x, R)` step and refills bytes until the st
 # 1. Build DP-optimal morphological dataset (requires dict.txt)
 python save_ml_dataset.py
 
-# 2a. Train, build & benchmark Python standalone solver (solve.py)
+# 2a. Train & generate Python standalone solver (solve.py, ~0.35s)
 python mlDictionaryTrainingCompression.py
-python solve.py > output.txt
+python solve.py > output_py.txt
 
-# 2b. Train, build & benchmark standalone C++20 solver (solve.cpp)
+# 2b. Train & generate standalone single-core C++20 solver (solve.cpp, ~9ms)
 python mlDictionaryTrainingCompressionCpp.py
-g++ -O2 -std=c++20 -Wall -Wextra -Wbidi-chars=any solve.cpp -o solve
-./solve > output.txt
+g++ -O3 -std=c++20 -Wall -Wextra -Wbidi-chars=any solve.cpp -o solve_cpp
+./solve_cpp > output_cpp.txt
 ```
