@@ -4,26 +4,44 @@
 
 ---
 
-# DP + Neural Dictionary Compression (`dict.txt` → `< 88 KiB` standalone UTF-8 `solve.py`)
+# DP + Neural Dictionary Compression (`dict.txt` → `< 88 KiB` standalone UTF-8 `solve.py` & `solve.cpp`)
 
-This repository contains a standalone, lossless dictionary compressor and self-extracting solver for [`dict.txt`](dict.txt) (`972,104` bytes, `102,399` English words):
+This repository contains standalone, lossless dictionary compressors and self-extracting solvers in both **Python 3** ([`solve.py`](solve.py)) and **C++20** ([`solve.cpp`](solve.cpp)) for [`dict.txt`](dict.txt) (`972,104` bytes, `102,399` English words):
 
-| Metric | Value |
-|---|---|
-| Raw dictionary (`dict.txt`) | `972,104` bytes (`102,399` words, `7.78 MiB` raw bits) |
-| Compressed standalone [`solve.py`](solve.py) | **`89,234` bytes (`87.14 KiB`)** (`9.18%` of input, `0.734` bits/byte including decoder & C source) |
-| External compression libraries used at runtime | **None** (zero `lzma`, zero `zlib`, zero `tempfile`, no external files read) |
-| Cold runtime (`python solve.py` with parallel `gcc`) | **`233.8 ms` min / `244.6 ms` median** (`294.7 ms` max across 6 cold runs on Windows) |
-| Pure-Python fallback (when `gcc` is unavailable) | ~`737 ms` (exact lossless output) |
-| Payload breakdown (`bin_tot = 73,848 B` + `cs_b = 3,682 B`) | `ml_bin = 67,370 B`, `w_b = 1,790 B`, `m_b = 1,423 B`, `py_b = 3,259 B`, `cs_b = 3,682 B` |
+| Metric | Python (`solve.py`) | C++20 (`solve.cpp`) |
+|---|---|---|
+| Standalone UTF-8 file size | **`89,234` B (`87.14 KiB`)** (`9.18%` of input) | **`89,955` B (`87.85 KiB`)** (`9.25%` of input) |
+| External compression libraries | **None** (zero `lzma`, zero `zlib`, zero `tempfile`) | **None** (standard C++20 `<cmath>`, `<cstdint>`, `<cstdio>`, `<cstring>`) |
+| Compile time | Runtime parallel `gcc -O0 -pipe -shared -s` | `705.5 ms` (`g++ -O2 -std=c++20 -Wall -Wextra -Wbidi-chars=any`, 0 warnings) |
+| Cold runtime (`min` / `median` / `max`) | **`233.8 ms` / `244.6 ms` / `294.7 ms`** | **`27.3 ms` / `30.6 ms` / `1604.6 ms`** (`27.3–33.6 ms` after initial AV scan) |
+| Pure-Python fallback (no `gcc`) | `737.4 ms` (exact lossless output) | — |
+| Raw payload (`bin_tot`) | `73,848 B` + `cs_b = 3,682 B` (`ml_bin=67,370 B`, `w_b=1,790 B`, `m_b=1,423 B`, `py_b=3,259 B`) | `70,587 B` (`ml_bin=67,370 B`, `w_b=1,790 B`, `m_b=1,423 B` + 4 B header) |
+
+---
+
+## Benchmark Results (Python vs C++)
+
+All runs verified byte-for-byte (`exact_match=True`) against [`dict.txt`](dict.txt) (`972,104` bytes, `102,399` words) on Windows 11 (MinGW-W64 GCC `15.2.0`, Python `3.13`):
+
+| Run | `python solve.py` (`89,234 B`) | Compiled `solve.cpp` (`89,955 B`, compiled in `705.5 ms`) |
+|---|---|---|
+| Run 1 | `294.7 ms` (`rc=0`, `exact=True`) | `1604.6 ms` (`rc=0`, `exact=True`, initial AV scan of fresh `.exe`) |
+| Run 2 | `233.8 ms` (`rc=0`, `exact=True`) | `33.6 ms` (`rc=0`, `exact=True`) |
+| Run 3 | `235.9 ms` (`rc=0`, `exact=True`) | `32.1 ms` (`rc=0`, `exact=True`) |
+| Run 4 | `244.7 ms` (`rc=0`, `exact=True`) | `27.3 ms` (`rc=0`, `exact=True`) |
+| Run 5 | `245.1 ms` (`rc=0`, `exact=True`) | `29.0 ms` (`rc=0`, `exact=True`) |
+| Run 6 | `244.5 ms` (`rc=0`, `exact=True`) | `27.7 ms` (`rc=0`, `exact=True`) |
+| **Summary** | **`min = 233.8 ms` \| `median = 244.6 ms`** | **`min = 27.3 ms` \| `median = 30.6 ms`** (`27.3–33.6 ms` steady) |
 
 ---
 
 ## Repository Files
 
 1. [`save_ml_dataset.py`](save_ml_dataset.py) — Constructs the morphological derivation graph over [`dict.txt`](dict.txt), discovers the top `200` inflection/derivation bitmasks, and solves a multi-tier **Dynamic Programming** Exact Cover / Dominating-Mask optimization (`35,364` base words, `112,375` suffix characters) written to [`ml_dataset.pkl`](ml_dataset.pkl).
-2. [`mlDictionaryTrainingCompression.py`](mlDictionaryTrainingCompression.py) — Builds optimal prefix/alphabetic trees (Knuth-Yao DP + Canonical Huffman), runs a 3-order PAQ-style bit-level FSM + quantized ReLU neural predictor trained with Adam + cosine annealing + $L_1$ sparsity, encodes the arithmetic bitstream (`ml_bin`), compresses auxiliary tables/code with 4-pass **DP-optimal LZSS + Order-0 rANS**, packs everything into valid UTF-8 via mixed-radix rANS, emits [`solve.py`](solve.py), and benchmarks cold execution against `dict.txt`.
-3. [`solve.py`](solve.py) — Self-contained UTF-8 Python 3 decoder. Overlaps `gcc -O0 -pipe -shared -s` compilation of the embedded C range/NN/sort engine with Python payload decoding, falling back to pure Python if `gcc` is absent.
+2. [`mlDictionaryTrainingCompression.py`](mlDictionaryTrainingCompression.py) — Builds optimal prefix/alphabetic trees (Knuth-Yao DP + Canonical Huffman), trains the 3-order PAQ-style bit-level FSM + quantized ReLU neural predictor (`190` Adam epochs + cosine annealing + $L_1 = 0.95$), compresses auxiliary tables/code with 4-pass **DP-optimal LZSS + Order-0 rANS**, packs everything into valid UTF-8 via mixed-radix rANS, and emits [`solve.py`](solve.py).
+3. [`mlDictionaryTrainingCompressionCpp.py`](mlDictionaryTrainingCompressionCpp.py) — Same DP + quantized FSM/NN + DP-LZSS/rANS training pipeline emitting a pure standalone zero-dependency **C++20** source [`solve.cpp`](solve.cpp) encoded over a non-bidi UTF-8 `R"!(...)!"` alphabet (no `cs_b`, no `py_b`, zero `-Wbidi-chars` warnings).
+4. [`solve.py`](solve.py) — Self-contained UTF-8 Python 3 decoder. Overlaps `gcc -O0 -pipe -shared -s` compilation of the embedded C range/NN/sort engine with Python payload decoding, falling back to pure Python if `gcc` is absent.
+5. [`solve.cpp`](solve.cpp) — Self-contained UTF-8 C++20 decoder (`<cmath>`, `<cstdint>`, `<cstdio>`, `<cstring>`, static `.bss` buffers with zero heap vectors, binary stdout `_O_BINARY` on Windows).
 
 ---
 
@@ -122,9 +140,11 @@ To eliminate `lzma` completely while keeping `solve.py < 88 KiB`, auxiliary payl
 
 ---
 
-### 5. Mixed-Radix UTF-8 rANS Source Embedding (`encode_utf8_rans`)
+### 5. Mixed-Radix UTF-8 rANS Source Embedding (`solve.py` vs non-bidi `solve.cpp`)
 
-Rather than Base64 (`6.00` bits/byte, 33% overhead) or UTF-16, the binary payloads (`full_bin` and `cs_b`) are transcoded directly into valid UTF-8 string literals over a 3-class mixed-radix Unicode alphabet excluding `\0`, `\n`, `\r`, `"`, `\`, and UTF-16 surrogates (`0xD800–0xDFFF`):
+Rather than Base64 (`6.00` bits/byte, 33% overhead) or UTF-16, the binary payloads are transcoded directly into valid UTF-8 string literals over a 3-class mixed-radix Unicode alphabet.
+
+For [`solve.py`](solve.py) (`encode_utf8_rans`, excluding `\0`, `\n`, `\r`, `"`, `\`, and surrogates `0xD800–0xDFFF`):
 
 | UTF-8 byte width | Codepoint count $N_k$ | Radix divisor $W_k$ | Mass $N_k W_k$ | Bits per UTF-8 byte |
 |---|---|---|---|---|
@@ -132,11 +152,13 @@ Rather than Base64 (`6.00` bits/byte, 33% overhead) or UTF-16, the binary payloa
 | 2-byte (`U+0080..U+07FF`) | $1,920$ | $2^{7} = 128$ | $245,760$ | $\frac{1}{2}\log_2(R/2^{7}) = 7.074$ |
 | 3-byte non-surrogate | $61,440$ | $1$ | $61,440$ | $\frac{1}{3}\log_2(R) = 7.049$ |
 
-with total state modulus
+$$R_{\text{py}} = 123 \cdot 2^{14} + 1920 \cdot 2^{7} + 61440 = 2,322,432, \qquad L = 2^{40}$$
 
-$$R = 123 \cdot 2^{14} + 1920 \cdot 2^{7} + 61440 = 2,322,432, \qquad L = 2^{40}$$
+For [`solve.cpp`](solve.cpp) (`encode_utf8_rans_nobidi`), GCC/Clang `-Wbidi-chars=any` flags bidirectional control characters (`U+202A–202E`, `U+2066–2069`, RTL blocks). Using C++ raw literals `R"!(...)!"` lets `"` and `\` pass unescaped while banning only `\0`, `\n`, `\r`, `)` (`124` 1-byte symbols) and restricting 2-byte (`U+0080..U+058F`) and 3-byte (`U+0900..U+1FFF`, `U+2100..U+D7FF`, `U+E000..U+FAFF`) ranges strictly to Left-to-Right blocks:
 
-Encoding emits one symbol per `divmod(x, R)` step and refills bytes until the stream is exhausted; decoding in `D(s, x)` consumes the reversed string via pure integer shifts (`R`, `O2 = 2,015,232`, `O3 = 2,260,992`), achieving **`> 7.05` bits per UTF-8 file byte** while keeping `solve.py` strictly valid UTF-8.
+$$R_{\text{cpp}} = 124 \cdot 2^{14} + 1296 \cdot 2^{7} + 59648 = 2,257,152, \qquad L = 2^{40}$$
+
+Encoding emits one symbol per `divmod(x, R)` step and refills bytes until the stream is exhausted; decoding consumes the reversed string via pure integer shifts, achieving **`> 7.05` bits per UTF-8 file byte** while keeping both `solve.py` and `solve.cpp` strictly valid UTF-8 with zero compiler warnings.
 
 ---
 
@@ -146,9 +168,12 @@ Encoding emits one symbol per `divmod(x, R)` step and refills bytes until the st
 # 1. Build DP-optimal morphological dataset (requires dict.txt)
 python save_ml_dataset.py
 
-# 2. Train quantized FSM+NN, run DP-LZSS+rANS & UTF-8 packing, generate & benchmark solve.py
+# 2a. Train, build & benchmark Python standalone solver (solve.py)
 python mlDictionaryTrainingCompression.py
-
-# 3. Run standalone decompressor (outputs exact dict.txt to stdout)
 python solve.py > output.txt
+
+# 2b. Train, build & benchmark standalone C++20 solver (solve.cpp)
+python mlDictionaryTrainingCompressionCpp.py
+g++ -O2 -std=c++20 -Wall -Wextra -Wbidi-chars=any solve.cpp -o solve
+./solve > output.txt
 ```
