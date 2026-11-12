@@ -204,7 +204,7 @@ Sorted base words $w_0 < w_1 < \dots < w_{N_B - 1}$ are decomposed into `(p_i, c
 - **Collision-Free Direct $F_2$ Indexing:** $\text{idx}_{F_2} = (c_2 \cdot 64 + c_1) \cdot 64 + u$ ($225,280$ bytes), eliminating hash operations.
 - **L2 Cache Residency:** Sizing $F_3$ to $2^{18} + 53 = 262,197$ bytes keeps the entire active working set ($\approx 529$ KB) resident in L2 cache.
 - **Inlined Folded Tables:** $T_1$, $T_2$, and $T_3$ pre-fold weights, biases, and padding so logit computation is a single 3-term addition: $\text{logit}_d = T_1[u][s_1] + T_2[u][s_2] + T_3[u][s_3]$.
-- **Half-Range Sigmoid:** Startup initialization is restricted to $|i - \text{sig\_pad}| \le 850$, reducing startup time to $< 0.18$ ms.
+- **Half-Range Sigmoid:** Startup initialization is restricted to `|i - sig_pad| <= 850`, clamping outer entries to $1$ or $4095$ and reducing solver startup time to $< 0.18$ ms.
 
 ### 4. Custom DP-Optimal LZSS + Static rANS
 Auxiliary metadata and bytecode are parsed using 4-pass backward dynamic programming evaluating optimal literal vs match parsing ($l \in [3, 288]$, $d \le 32,767$) with dynamic Shannon entropy feedback.
