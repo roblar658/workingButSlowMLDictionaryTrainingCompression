@@ -9,7 +9,17 @@ from typing import List, Set, Tuple
 
 class MorphologicalRules:
     """Collection of deterministic English morphological rules."""
-    
+
+    # Compact rule bytecode + null-separated suffix/prefix string table shared by C/C++/Python decoders.
+    AP_BLOB: bytes = (
+        b"\t\x000\x000\x010\x020\x032\x030\x040\x050\x0b\x011\n\x032\t\x042\x060\x00\x13\x0f\x120\x01\x13\x0f\x120\x02\x13\x0f\x120"
+        b"\x00\x13\x0f\x130\x01\x13\x0f\x130\x02\x13\x0f\x130\x00\x13\x0f\x140\x0c\x052\n\x06\x10\x13\x00\x10\x01\x10\x020\x0e\x070"
+        b"\x0e\x080\x0e\n2\x0e\n0\x0e\x0b0\x0e\x0c0\n\x0c0\x070\x07\x10\x13\x050\x080\x08\x10\x13\t\r\x10\t\x0e0\n\x0f\x10\x13\x050"
+        b"\n\x10\x10\x13\x050\x02\x13\t\x110\x06\x13\r\x0c0\x05\x13\x0f\x120's\x00iness\x00ness\x00ion\x00ment\x00ity\x00ize\x00ed"
+        b"\x00ing\x00\x00er\x00est\x00y\x00al\x00ally\x00ive\x00ous\x00ly\x00un\x00re\x00dis\x00in\x00de\x00over\x00mis\x00non\x00pre"
+        b"\x00out\x00under\x00sub\x00im\x00en\x00be\x00d\x00r\x00st\x00ied\x00ier\x00iest\x00es\x00ies\x00s\x00ily\x00able\x00ial\x00ic\x00"
+    )
+
     PREFIXES: Tuple[str, ...] = (
         "un", "re", "dis", "in", "de", "over", "mis", "non", "pre", "out",
         "under", "sub", "im", "en", "be"
@@ -122,6 +132,8 @@ class MorphologicalRules:
     @classmethod
     def apply_rule(cls, op_idx: int, w: str) -> List[str]:
         """Apply the specified rule index (0..51) to a base word."""
+        if not w:
+            return []
         if op_idx >= 37:
             # Standalone prefix rules
             prefix = cls.PREFIXES[op_idx - 37]
@@ -164,6 +176,8 @@ class MorphologicalRules:
         if op_idx == 20:
             v = cls.verb_ize(w)
             return [v, cls.plural(v), cls.past_tense(v), cls.progressive(v)]
+        if 21 <= op_idx <= 26 and not w[-1].isascii():
+            return []
         if op_idx == 21: return [w + w[-1] + "ed"]
         if op_idx == 22: return [w + w[-1] + "ing"]
         if op_idx == 23:

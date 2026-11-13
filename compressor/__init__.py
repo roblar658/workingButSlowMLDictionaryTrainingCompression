@@ -16,12 +16,14 @@ from compressor.morphology.dataset import DatasetBuilder
 from compressor.models.paq_fsm import PAQBitFSM
 from compressor.models.context_router import ContextRouter
 from compressor.models.neural_trainer import NeuralLogisticTrainer
+from compressor.models.zero_paq import ZeroPAQModel
 from compressor.encoding.huffman import CanonicalHuffman
 from compressor.encoding.rans import RangeANS
 from compressor.encoding.lzss import DPOptimalLZSS
 from compressor.encoding.utf8_rans import UTF8Encoder
 from compressor.codegen.cpp_generator import CppSolverGenerator
 from compressor.codegen.py_generator import PySolverGenerator
+from compressor.pipeline import DictionaryCompressionPipeline
 
 __version__ = "2.0.0"
 __all__ = [
@@ -31,10 +33,12 @@ __all__ = [
     "PAQBitFSM",
     "ContextRouter",
     "NeuralLogisticTrainer",
+    "ZeroPAQModel",
     "CanonicalHuffman",
     "RangeANS",
     "DPOptimalLZSS",
     "UTF8Encoder",
     "CppSolverGenerator",
     "PySolverGenerator",
+    "DictionaryCompressionPipeline",
 ]

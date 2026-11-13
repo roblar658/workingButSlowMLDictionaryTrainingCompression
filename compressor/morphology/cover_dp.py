@@ -9,7 +9,7 @@ the morphological derivation graph:
 """
 
 import math
-from typing import Dict, List, Set, Tuple
+from typing import Dict, FrozenSet, List, Set, Tuple
 
 class ExactCoverDP:
     """Exact DP solver for morphological graph cover."""
@@ -157,45 +157,157 @@ class ExactCoverDP:
         valid_masks: Dict[str, List[Tuple[int, Set[str]]]],
         mask_probs: Dict[int, float]
     ) -> List[Tuple[str, int]]:
-        """Exact bitmask subset DP for small components (|V| <= 21)."""
+        """Exact bitmask subset DP for small components (|V| <= 21) via reachable-state memoization."""
         n = len(nodes)
+        if n == 0:
+            return []
         n2i = {w: i for i, w in enumerate(nodes)}
-        
-        cands = []
+
+        buckets: List[List[Tuple[int, int, int, float]]] = [[] for _ in range(n)]
         for u in nodes:
             ui = n2i[u]
             for m, cov in valid_masks[u]:
+                if not cov.issubset(n2i):
+                    continue
                 cov_mask = 1 << ui
                 for v in cov:
-                    if v in n2i:
-                        cov_mask |= (1 << n2i[v])
-                cands.append((ui, m, cov_mask, cls.cost(u, m, mask_probs)))
-        
+                    cov_mask |= (1 << n2i[v])
+                cost_val = cls.cost(u, m, mask_probs)
+                mm = cov_mask
+                while mm:
+                    lsb = mm & -mm
+                    buckets[lsb.bit_length() - 1].append((ui, m, cov_mask, cost_val))
+                    mm ^= lsb
+
         full = (1 << n) - 1
-        dp = [float("inf")] * (1 << n)
-        parent = [None] * (1 << n)
-        dp[0] = 0.0
-        
-        for bm in range(full):
-            cur_c = dp[bm]
-            if cur_c == float("inf"):
-                continue
-            # Branch only on candidates that cover the lowest uncovered element
+        memo: Dict[int, float] = {full: 0.0}
+        choice: Dict[int, Tuple[int, int, int]] = {}
+
+        def dfs(bm: int) -> float:
+            if bm in memo:
+                return memo[bm]
             uncovered = full ^ bm
-            target_bit = (uncovered & -uncovered).bit_length() - 1
-            
-            for ui, m, c_mask, cost_val in cands:
-                if (c_mask & (1 << target_bit)) and not (c_mask & bm):
-                    nbm = bm | c_mask
-                    nc = cur_c + cost_val
-                    if nc < dp[nbm]:
-                        dp[nbm] = nc
-                        parent[nbm] = (bm, ui, m)
-        
+            t = (uncovered & -uncovered).bit_length() - 1
+            best = float("inf")
+            best_c = None
+            for ui, m, cm, cval in buckets[t]:
+                if not (cm & bm):
+                    val = cval + dfs(bm | cm)
+                    if val < best:
+                        best = val
+                        best_c = (ui, m, cm)
+            memo[bm] = best
+            if best_c is not None:
+                choice[bm] = best_c
+            return best
+
+        dfs(0)
         res = []
-        curr = full
-        while curr > 0:
-            prev, ui, m = parent[curr]
+        curr = 0
+        while curr != full:
+            ui, m, cm = choice[curr]
             res.append((nodes[ui], m))
-            curr = prev
+            curr |= cm
         return res
+
+    @classmethod
+    def solve_large_dp(
+        cls,
+        nodes: List[str],
+        adj: Dict[str, Set[str]],
+        valid_masks: Dict[str, List[Tuple[int, Set[str]]]],
+        mask_probs: Dict[int, float],
+        group_limit: int = 16,
+        sweeps: int = 2
+    ) -> List[Tuple[str, int]]:
+        """Greedy initialization followed by iterative closed-group exact subset DP."""
+        comp_set = set(nodes)
+        all_cands = []
+        for u in nodes:
+            for m, cov in valid_masks[u]:
+                if cov.issubset(comp_set):
+                    st = frozenset({u} | cov)
+                    all_cands.append((cls.cost(u, m, mask_probs) / len(st), u, m, st))
+        all_cands.sort(key=lambda x: x[0])
+
+        covered: Set[str] = set()
+        star_of: Dict[str, Tuple[str, int, FrozenSet[str]]] = {}
+        stars: Dict[str, Tuple[str, int, FrozenSet[str]]] = {}
+
+        for _, u, m, st in all_cands:
+            if not (st & covered):
+                covered |= st
+                entry = (u, m, st)
+                stars[u] = entry
+                for x in st:
+                    star_of[x] = entry
+        for u in nodes:
+            if u not in covered:
+                st = frozenset((u,))
+                entry = (u, 0, st)
+                stars[u] = entry
+                star_of[u] = entry
+
+        checked_groups: Set[FrozenSet[str]] = set()
+        for _ in range(sweeps):
+            improved = False
+            for seed_root in list(stars.keys()):
+                if seed_root not in stars:
+                    continue
+                seed_star = stars[seed_root]
+                grp_nodes: Set[str] = set(seed_star[2])
+                grp_stars: Dict[str, Tuple[str, int, FrozenSet[str]]] = {seed_root: seed_star}
+
+                while len(grp_nodes) < group_limit:
+                    best_cand = None
+                    best_score = -1
+                    cand_roots: Set[str] = set()
+                    for v in grp_nodes:
+                        for nb in adj[v]:
+                            if nb in comp_set and nb not in grp_nodes:
+                                cand_roots.add(star_of[nb][0])
+                    if not cand_roots:
+                        break
+                    for cr in cand_roots:
+                        st = stars[cr][2]
+                        if len(grp_nodes) + len(st) <= group_limit:
+                            # Prefer adding neighbor stars strongly connected to current group
+                            links = sum(1 for x in st for nb in adj[x] if nb in grp_nodes)
+                            sc = links * 10 - len(st)
+                            if sc > best_score:
+                                best_score = sc
+                                best_cand = cr
+                    if best_cand is None:
+                        break
+                    st_entry = stars[best_cand]
+                    grp_stars[best_cand] = st_entry
+                    grp_nodes |= st_entry[2]
+
+                fg = frozenset(grp_nodes)
+                if fg in checked_groups:
+                    continue
+                checked_groups.add(fg)
+
+                old_cost = sum(cls.cost(su, sm, mask_probs) for su, sm, _ in grp_stars.values())
+                sub_valid = {
+                    x: [(m, cov) for m, cov in valid_masks[x] if cov.issubset(grp_nodes)]
+                    for x in grp_nodes
+                }
+                sub_sol = cls.solve_subset_dp(list(grp_nodes), sub_valid, mask_probs)
+                new_cost = sum(cls.cost(nu, nm, mask_probs) for nu, nm in sub_sol)
+                if new_cost < old_cost - 1e-9:
+                    improved = True
+                    checked_groups.clear()
+                    for old_r in grp_stars:
+                        del stars[old_r]
+                    for nu, nm in sub_sol:
+                        ncov = next(c for mm, c in sub_valid[nu] if mm == nm)
+                        nst = frozenset({nu} | ncov)
+                        n_entry = (nu, nm, nst)
+                        stars[nu] = n_entry
+                        for x in nst:
+                            star_of[x] = n_entry
+            if not improved:
+                break
+
+        return [(u, m) for u, m, _ in stars.values()]

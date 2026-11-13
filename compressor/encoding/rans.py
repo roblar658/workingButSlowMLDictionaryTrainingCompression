@@ -14,6 +14,8 @@ class RangeANS:
     def encode_order0(syms: List[int], M: int = 2048) -> bytes:
         """Order-0 rANS encoder with quantized probability distribution header."""
         n = len(syms)
+        if n == 0:
+            return b"\x00" * 8
         fc = Counter(syms)
         used = sorted(fc.keys())
         fq = {s: max(1, int(round(fc[s] * M / n))) for s in used}

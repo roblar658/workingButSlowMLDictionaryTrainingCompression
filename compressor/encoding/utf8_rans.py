@@ -26,6 +26,9 @@ class UTF8Encoder:
         OFF3 = OFF2 + W2 * 128
 
         L = 1 << 40
+        L_eff = (L // R) * R
+        if len(raw) < 5:
+            raw = raw + b"\x00" * (5 - len(raw))
         x = L + int.from_bytes(raw[:5], "big")
         cps = []
         di = 5
@@ -55,7 +58,7 @@ class UTF8Encoder:
                 )
             cps.append(chr(s))
             done = False
-            while x < L:
+            while x < L_eff:
                 if di >= nd:
                     done = True
                     break
@@ -83,6 +86,9 @@ class UTF8Encoder:
         OFF3 = OFF2 + W2 * 128
 
         L = 1 << 40
+        L_eff = (L // R) * R
+        if len(raw) < 5:
+            raw = raw + b"\x00" * (5 - len(raw))
         x = L + int.from_bytes(raw[:5], "big")
         cps = []
         di = 5
@@ -112,7 +118,7 @@ class UTF8Encoder:
                 )
             cps.append(chr(s))
             done = False
-            while x < L:
+            while x < L_eff:
                 if di >= nd:
                     done = True
                     break

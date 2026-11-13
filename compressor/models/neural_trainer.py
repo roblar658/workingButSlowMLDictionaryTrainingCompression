@@ -23,16 +23,28 @@ class NeuralLogisticTrainer:
         nx1: np.ndarray,
         c2i: Dict[str, int],
         mix_fn,
-        bos: int = 54,
-        eow: int = 53
+        bos: int = None,
+        eow: int = None
     ):
         """Pass through raw items and collect bit-level events and FSM state histories."""
+        n_ch = len(c2i)
+        if eow is None:
+            eow = n_ch
+        if bos is None:
+            bos = n_ch + 1
+        s_stride = n_ch + 2
         H0 = trem["n_int"]
+        h_stride = 1 << max(6, (H0 - 1).bit_length() if H0 > 1 else 0)
+        cb = max(6, (s_stride - 1).bit_length())
         M3 = 1 << m3b
         MASK3 = M3 - 1
 
-        FS1 = np.zeros(55 * f1_k * 64, dtype=np.uint8)
-        FS2 = np.zeros(225280, dtype=np.uint8)
+        use_h2_hash = (s_stride * s_stride * H0 > 393216)
+        M2 = 1 << 18
+        MASK2 = M2 - 1
+
+        FS1 = np.zeros(s_stride * f1_k * h_stride, dtype=np.uint8)
+        FS2 = np.zeros((M2 + H0) if use_h2_hash else (s_stride * s_stride * H0), dtype=np.uint8)
         FS3 = np.zeros(M3 + H0, dtype=np.uint8)
 
         bit_nid = []
@@ -50,9 +62,9 @@ class NeuralLogisticTrainer:
             c3 = wc_pad[5 + p - 2]
             wl = 0
             for tok in w_ids[p + 1:] + [eow]:
-                c1_off = (c1 * f1_k + min(wl, f1_k - 1)) * 64
-                h2_b = (c2 * 64 + c1) * 64
-                h3_b = mix_fn((c3 << 12) ^ (c2 << 6) ^ c1 ^ 0x8888) & MASK3
+                c1_off = (c1 * f1_k + min(wl, f1_k - 1)) * h_stride
+                h2_b = (mix_fn((c2 << cb) ^ c1 ^ 0x7777) & MASK2) if use_h2_hash else ((c2 * s_stride + c1) * H0)
+                h3_b = mix_fn((c3 << (2 * cb)) ^ (c2 << cb) ^ c1 ^ 0x8888) & MASK3
                 for u, b in trem["codes"][tok]:
                     k1 = c1_off + u
                     k2 = h2_b + u
@@ -157,9 +169,13 @@ class NeuralLogisticTrainer:
         qS3 = np.clip(np.round(params["S3"] * qs), -127, 127).astype(np.int32)
         qWm = np.clip(np.round(params["Wm"] * qw), -64, 64).astype(np.int32)
 
-        wm_q = qWm[a_nid]
-        logit_d = qw0[a_nid] * qw + wm_q[:, 0] * qS1[a_s1] + wm_q[:, 1] * qS2[a_s2] + wm_q[:, 2] * qS3[a_s3]
-        sig_pad = max(2048, int(-logit_d.min()) + 2, int(logit_d.max()) + 2)
+        if len(a_y) > 0:
+            wm_q = qWm[a_nid]
+            logit_d = qw0[a_nid] * qw + wm_q[:, 0] * qS1[a_s1] + wm_q[:, 1] * qS2[a_s2] + wm_q[:, 2] * qS3[a_s3]
+            sig_pad = max(2048, int(-logit_d.min()) + 2, int(logit_d.max()) + 2)
+        else:
+            logit_d = np.empty(0, dtype=np.int32)
+            sig_pad = 2048
         arg = np.clip(np.arange(-sig_pad, sig_pad + 1) / float(denom), -40.0, 40.0)
         SIG_ARR = np.clip(np.rint(4096.0 / (1.0 + np.exp(arg))), 1, 4095).astype(np.int32)
         sig_cut = min(sig_pad, 850)

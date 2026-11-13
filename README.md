@@ -8,14 +8,13 @@
 
 This repository contains standalone, lossless dictionary compressors and self-extracting solvers in both **Python 3** ([`solve.py`](solve.py)) and **C++20** ([`solve.cpp`](solve.cpp)) for [`dict.txt`](dict.txt) (`972,104` bytes, `102,399` English words):
 
-| Metric | Python ([`solve.py`](solve.py), Dual-Tier PAQ / C-Bridge) | C++20 ([`solve.cpp`](solve.cpp), Single-Core `RemOnly`) |
+| Metric | Python ([`solve.py`](solve.py), Unified C-Accel + Pure-Python Fallback) | C++20 ([`solve.cpp`](solve.cpp), Single-Core `RemOnly`) |
 |---|---|---|
-| Standalone UTF-8 file size | **`89,234` B (`87.14 KiB`)** (`9.18%` of input, `+878 B` headroom) | **`89,975` B (`87.87 KiB`)** (`9.26%` of input, `+137 B` headroom) |
-| External compression / build deps | **None** (pure Python stdlib + optional background C-acceleration bridge with zero-dependency fallback) | **None** (zero threads, zero pthreads, zero OpenMP, standard `<cmath>`, `<cstdint>`, `<cstdio>`, `<cstring>`) |
-| Compile time | **None** (runtime standalone script) | `1.15–1.40 s` (`g++ -O2 -std=c++20 -Wall -Wextra -Wbidi-chars=any`, 0 warnings) |
-| Warm subprocess wall (`min` / `median`) | **`~0.27–0.32 s` / `~0.35 s`** (exact lossless match, 0 bidi warnings) | **`12.80 ms` / `13.40 ms`** (quiet warm runs) |
-| Internal core runtime (`clock_gettime`) | — | **`8.87 ms` (min) / `8.99 ms` (median)** with `-O3` (**`~2.0x` single-core speedup** vs `44e41a2` baseline) |
-| Raw payload (`bin_tot`) | `73,848 B` (`ml_bin=67,370 B`, `cs_b=3,682 B`, `w_b=1,790 B`, `m_b=1,423 B`, `py_b=3,259 B`) | `74,012 B` (`ml_bin=57,112 B`, `meta_lz=1,217 B`, `pci_b=15,675 B` + 8 B header) |
+| Standalone UTF-8 file size | **`89,964` B (`87.86 KiB`)** (`9.25%` of input, `+148 B` headroom) | **`89,445` B (`87.35 KiB`)** (`9.20%` of input, `+667 B` headroom) |
+| External compression / build deps | **None** (headerless C shared library via `gcc` with zero-dependency pure-Python fallback) | **None** (zero threads, zero pthreads, zero OpenMP, standard `<cmath>`, `<cstdint>`, `<cstdio>`, `<cstring>`) |
+| Compile time | **None** (runtime standalone script) | `g++ -O2/-O3 -std=c++20 -Wall -Wextra -Wbidi-chars=any`, **0 warnings** |
+| Subprocess wall on `dict.txt` (Windows 11) | **`608.8 ms`** pure-Python fallback (`PATH=""`); `1101.7 ms` with runtime `gcc` DLL compilation | **`18.2 ms` best warm** (`-O3`, exact lossless match, `0` warnings) |
+| Raw payload (`bin_tot`) | `c_lz=5,194 B`, `py_lz=4,171 B`, `blob=73,230 B` (`meta_lz=4,269 B`, `pci_b=33,477 B`, `ml_bin=35,476 B`) | `73,230 B` (`meta_lz=4,269 B`, `pci_b=33,477 B`, `ml_bin=35,476 B` + `4 B` header + `4 B` pad) |
 
 ---
 
@@ -36,21 +35,21 @@ flowchart TD
     ROUTER --> TARGET_PY["Python Pipeline (solve.py)"]
 
     subgraph "C++ Neural PAQ Pipeline"
-        TARGET_CPP --> RANS_CPP["Unified Context rANS (p, c0, inf - RP 143x256)"]
+        TARGET_CPP --> RANS_CPP["Unified Context rANS (p, c0, inf - KL(48,32))"]
         TARGET_CPP --> PAQ_CPP["3-Order Bit-FSM + Logistic Model (418k bits)"]
         PAQ_CPP --> ADAM_CPP["Adam Optimizer & int8 Quantization (T1, T2, T3)"]
         ADAM_CPP --> RANGE_CPP["32-bit Multi-Precision Range Encoder"]
         RANS_CPP & RANGE_CPP --> LZSS_CPP["DP-Optimal LZSS (Metadata & Bytecode)"]
         LZSS_CPP --> UTF8_CPP["Mixed-Radix Non-Bidi UTF-8 (R literal)"]
-        UTF8_CPP --> SOLVE_CPP["solve.cpp (89,975 B, 9ms runtime)"]
+        UTF8_CPP --> SOLVE_CPP["solve.cpp (89,445 B, ~18ms warm)"]
     end
 
-    subgraph "Python Dual-Tier Pipeline"
-        TARGET_PY --> PAQ_PY["PAQ 160-state Bit-FSM Model"]
-        TARGET_PY --> BRIDGE_PY["Dual-Tier C-Bridge / Python Fallback Engine"]
-        PAQ_PY & BRIDGE_PY --> LZSS_PY["DP-Optimal LZSS Compressor"]
+    subgraph "Python Unified NN+PAQ Pipeline"
+        TARGET_PY --> RANS_PY["Unified Context rANS + 80-state Bit-FSM Logistic Model"]
+        TARGET_PY --> BRIDGE_PY["Headerless C Shared-Lib Decoder + Pure-Python Fallback"]
+        RANS_PY & BRIDGE_PY --> LZSS_PY["DP-Optimal LZSS Compressor"]
         LZSS_PY --> UTF8_PY["Safe Non-Bidi UTF-8 String Literal"]
-        UTF8_PY --> SOLVE_PY["solve.py (89,234 B, 0.35s runtime)"]
+        UTF8_PY --> SOLVE_PY["solve.py (89,964 B)"]
     end
 
     SOLVE_CPP --> LOSSLESS["Exact Lossless Reconstruction (100% SHA-256 match)"]
@@ -101,7 +100,7 @@ flowchart TD
         RADIX_C --> STDOUT_C["Direct fwrite to stdout"]
     end
 
-    subgraph "Python Solver (solve.py - 0.35s)"
+    subgraph "Python Solver (solve.py)"
         U_PY["Embedded UTF-8 String (U)"] --> DEC_UTF8_PY["Pure-Python Mixed-Radix UTF-8 Decoder"]
         DEC_UTF8_PY --> BLOB_PY["Binary Blob (Weights, Python bytecode, Bitstream)"]
         BLOB_PY --> LZSS_DEC_PY["DP-LZSS Python Decompressor"]
@@ -149,11 +148,13 @@ gh_repo/
 │       ├── cpp_generator.py        # CppSolverGenerator: Emits self-contained solve.cpp
 │       └── py_generator.py         # PySolverGenerator: Emits self-contained solve.py
 │
+├── tests/                          # Automated unit & arbitrary UTF-8 edge-case tests
+│   └── test_dictionary_compression.py
 ├── save_ml_dataset.py              # CLI: Discovers cover rules and creates ml_dataset.pkl
 ├── mlDictionaryTrainingCompressionCpp.py # CLI: Trains C++ model and generates solve.cpp
 ├── mlDictionaryTrainingCompression.py    # CLI: Trains Python model and generates solve.py
-├── solve.cpp                       # Verified standalone C++ solver (89,975 B, ~9ms)
-├── solve.py                        # Verified standalone Python solver (89,234 B, ~0.35s)
+├── solve.cpp                       # Verified standalone C++ solver (89,445 B)
+├── solve.py                        # Verified standalone Python solver (89,964 B)
 ├── dict.txt                        # Target dictionary (102,399 words, 972,104 bytes)
 └── README.md                       # Architecture documentation & benchmarks
 ```
@@ -220,12 +221,15 @@ Payloads are packed into high-density UTF-8 characters excluding control charact
 # 1. Build DP-optimal morphological dataset (requires dict.txt)
 python save_ml_dataset.py
 
-# 2a. Train & generate Python standalone solver (solve.py, ~0.35s)
+# 2a. Train & generate Python standalone solver (solve.py)
 python mlDictionaryTrainingCompression.py
 python solve.py > output_py.txt
 
-# 2b. Train & generate standalone single-core C++20 solver (solve.cpp, ~9ms)
+# 2b. Train & generate standalone single-core C++20 solver (solve.cpp)
 python mlDictionaryTrainingCompressionCpp.py
 g++ -O3 -std=c++20 -Wall -Wextra -Wbidi-chars=any solve.cpp -o solve_cpp
 ./solve_cpp > output_cpp.txt
+
+# 3. Run automated unit & arbitrary-UTF-8 (including ÆØÅæøå and ') test suite
+python -m unittest discover -s tests -v
 ```

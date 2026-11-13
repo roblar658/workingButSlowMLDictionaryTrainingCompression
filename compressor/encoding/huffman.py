@@ -40,6 +40,13 @@ class CanonicalHuffman:
     def build_canonical_tree(lens: List[int]) -> Dict[str, Any]:
         """Construct canonical binary decoding tree and bit-encoding paths from code lengths."""
         K = len(lens)
+        if K == 0:
+            return {"n_int": 0, "left": [], "right": [], "leaf_val": [], "leaf_mask": [], "codes": {}, "lens": lens}
+        if K == 1:
+            return {
+                "n_int": 0, "left": [], "right": [], "leaf_val": [0],
+                "leaf_mask": [1], "codes": {0: []}, "lens": lens,
+            }
         L = [0] * (K - 1)
         R = [0] * (K - 1)
         V = [0] * K
