@@ -1,6 +1,8 @@
 # Expected output when using a compiled solve.py, given a dictionary
 
-<img width="959" height="462" alt="image" src="https://github.com/user-attachments/assets/8197c7b2-7717-496c-bbae-5e1821d5fcb4" />
+<img width="1920" height="1200" alt="image" src="https://github.com/user-attachments/assets/69cd38b2-da40-495e-9fb9-70e98c4a0ca1" />
+<img width="959" height="599" alt="image" src="https://github.com/user-attachments/assets/a5cb6eb0-e099-4424-8ff6-33efce0fcbcd" />
+
 
 ---
 
