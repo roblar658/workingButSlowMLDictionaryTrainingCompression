@@ -22,6 +22,7 @@ from compressor.models import ContextRouter
 from compressor.morphology import DatasetBuilder
 from compressor.pipeline import DictionaryCompressionPipeline
 from mlDictionaryTrainingCompressionCpp import build_single_core_solver
+from mlDictionaryTrainingCompressionPy2 import build_py2_solver
 from mlDictionaryTrainingCompressionRs import build_rust_solver
 
 
@@ -381,6 +382,17 @@ class TestArbitraryDictionaries(unittest.TestCase):
         words = [pref + "alpha", pref + "beta", pref + "betas", "x" * 72 + "y", "x" * 72 + "ies"]
         self._assert_roundtrip(("\n".join(words) + "\n").encode("utf-8"))
 
+    def test_cli_builder_normalizes_unsorted_dict(self):
+        with tempfile.TemporaryDirectory() as td:
+            td_p = Path(td)
+            dp = td_p / "dict.txt"
+            op = td_p / "solve_py2.py"
+            dp.write_bytes("Det\r\nVARÆ\r\nEN\r\nGANG\r\nEN \r\nKU\r\nEN\r\n".encode("utf-8"))
+            py_src, _, total_sz = build_py2_solver(str(dp), str(op), dataset_path="", epochs=80)
+            self.assertEqual(total_sz, op.stat().st_size)
+            self.assertLess(total_sz, SIZE_LIMIT_BYTES)
+            _assert_py2_compatible(self, py_src)
+
 
 class TestRepositorySolvers(unittest.TestCase):
     """Validates generated solve.cpp, solve.py, solve_py2.py, and solve.rs on the main REPO dict.txt."""
@@ -436,17 +448,7 @@ class TestRepositorySolvers(unittest.TestCase):
                 self.assertEqual(res_run_rs.stdout.replace(b"\r\n", b"\n"), exp)
 
             td_p = Path(td)
-            if shutil.which("gcc"):
-                res_py_gcc = subprocess.run([sys.executable, str(py_p)], capture_output=True)
-                self.assertEqual(res_py_gcc.returncode, 0, res_py_gcc.stderr.decode("utf-8", "replace"))
-                self.assertEqual(res_py_gcc.stdout.replace(b"\r\n", b"\n"), exp)
-
-            env_no_gcc = os.environ.copy()
-            env_no_gcc["PATH"] = ""
-            res_py_fb = subprocess.run([sys.executable, str(py_p)], capture_output=True, env=env_no_gcc)
-            self.assertEqual(res_py_fb.returncode, 0, res_py_fb.stderr.decode("utf-8", "replace"))
-            self.assertEqual(res_py_fb.stdout.replace(b"\r\n", b"\n"), exp)
-
+            _verify_py_solver(self, py_p, exp, td_p)
             _verify_py_solver(self, py2_p, exp, td_p, check_py2=True)
 
 
