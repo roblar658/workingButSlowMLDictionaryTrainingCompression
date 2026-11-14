@@ -6,6 +6,7 @@ zero-header NN+PAQ C decoder compiled via gcc, with a pure-Python fallback when
 gcc is unavailable.
 """
 
+import re
 import struct
 from typing import Any, Dict, Tuple
 
@@ -138,8 +139,12 @@ class PySolverGenerator:
         return "".join(parts)
 
     @staticmethod
-    def _build_nn_py_fallback(a: Dict[str, Any]) -> str:
-        """Build pure-Python NN+PAQ fallback source compressed inside K."""
+    def _build_nn_py_fallback(a: Dict[str, Any], py2: bool = False) -> str:
+        """Build pure-Python NN+PAQ fallback source compressed inside K.
+
+        When `py2=True`, emits Python 2.7 and 3.x dual-compatible source using
+        `bytearray`, `memoryview`, `struct.unpack_from`, and Python 2-safe idioms.
+        """
         n_fsm = a["n_fsm"]
         f1_k = a["f1_k"]
         m3b = a["m3b"]
@@ -156,121 +161,217 @@ class PySolverGenerator:
         cb_shift = a["cb_shift"]
         h_stride = a["h_stride"]
         ac0 = a["ac0"]
+
+        rn = "R" if py2 else "range"
+        nul_pat = "b'\\0'" if py2 else "0"
+        nb_rd = "nb=M[q]|M[q+1]<<8;q+=2" if py2 else "nb,=struct.unpack_from('<H',M,q);q+=2"
+        sig_expr = (
+            f"int(.5+4096./(1+math.exp((i-{sp})/{dn})))"
+            if py2
+            else f"round(4096/(1+math.exp((i-{sp})/{dn})))"
+        )
+        vv_expr = "chr(c)in'aeiou'" if py2 else "c in b'aeiou'"
+        sxz_chk = "chr(e)in'sxz'" if py2 else "e in b'sxz'"
+        cs_chk = "chr(f)in'cs'" if py2 else "f in b'cs'"
+        eyo_chk = "chr(f)in'eyo'" if py2 else "f in b'eyo'"
+        ecg_chk = "chr(f)in'ecg'" if py2 else "f in b'ecg'"
+        d_init = "A_()" if py2 else 'b""'
+        wb_join = "A_().join(Wb)" if py2 else 'b"".join(Wb)'
+        ow_init = "OW=[];oa=OW.append" if py2 else "OW=[]"
+        oa = "oa" if py2 else "OW.append"
+        ow_out = (
+            'memoryview(A_(b"\\n").join(OW)).tobytes()+(b"\\n"if OW else b"")'
+            if py2
+            else 'b"\\n".join(OW)+(b"\\n" if OW else b"")'
+        )
+        u24 = "1<<24" if py2 else "16777216"
+        u32 = "(1<<32)-1" if py2 else "4294967295"
+        hdr = (
+            f"A_=bytearray;R=range;U_=struct.unpack_from;W_=U_('<{a['w_bytes_len']}b',M);xp,=U_('>I',pb);L,=U_('>I',Qd);q={a['w_bytes_len']};M,pb,Qd=A_(M),A_(pb),A_(Qd)"
+            if py2
+            else f"W_=struct.unpack_from('<{a['w_bytes_len']}b',M);q={a['w_bytes_len']}"
+        )
+        rans_hdr = (
+            "po=di=4;Rn=1<<32"
+            if py2
+            else "xp=int.from_bytes(pb[:4],'big');po=4;Rn=1<<32;L=int.from_bytes(Qd[:4],'big');di=4"
+        )
         b2_py = (
-            f"z_=((c2<<{cb_shift})^c1^30583)*2654435761&4294967295;b2=(z_^(z_>>16))&262143"
+            f"z_=((c2<<{cb_shift})^c1^30583)*2654435761&{u32};b2=(z_^(z_>>16))&262143"
             if a["use_h2_hash"]
             else f"b2=(c2*{s_stride}+c1)*{h0}"
         )
 
-        return (
+        code = (
 f"""import math,struct
-W_=struct.unpack_from('<{a['w_bytes_len']}b',M);q={a['w_bytes_len']}
+{hdr}
 NX=M[q:q+{n_fsm}],M[q+{n_fsm}:q+{2 * n_fsm}];q+={2 * n_fsm}
 ln=M[q:q+{n_ch + 1}];q+={n_ch + 1};up=M[q:q+{a['n_up_inf']}];q+={a['n_up_inf']}
 mo=[]
-for _ in range({a['n_masks']}):mo.append(q);q+=1+M[q]
+for _ in {rn}({a['n_masks']}):mo.append(q);q+=1+M[q]
 ao=[];A=[]
-for _ in range(37):
+for _ in {rn}(37):
  ao.append(q)
  while 1:
   c=M[q];q+=1
   if 8<c<16:q+=1
   if c&32:break
-for _ in range(46):e=M.index(0,q);A.append(M[q:e]);q=e+1
+for _ in {rn}(46):e=M.index({nul_pat},q);A.append(M[q:e]);q=e+1
 CH=[]
-for _ in range({n_ch}):b=M[q];l=1+(b>191)+(b>223)+(b>239);CH.append(M[q:q+l]);q+=l
+for _ in {rn}({n_ch}):b=M[q];l=1+(b>191)+(b>223)+(b>239);CH.append(M[q:q+l]);q+=l
 UP=list(M[q:q+{n_ch}])+[0,0];q+={n_ch}
-c0f=M[q:q+{s_stride}];q+={s_stride};nb,=struct.unpack_from('<H',M,q);q+=2;CO={{(M[q+i*3],M[q+i*3+1]):M[q+i*3+2] for i in range(nb)}};q+=nb*3
+c0f=M[q:q+{s_stride}];q+={s_stride};{nb_rd};CO={{(M[q+i*3],M[q+i*3+1]):M[q+i*3+2] for i in {rn}(nb)}};q+=nb*3
 isf=M[q:q+{s_stride}];iu0=M[q+{s_stride}];ilf=M[q+{s_stride + 1}:q+{2 * s_stride + 1}];q+={2 * s_stride + 1};IM={{}}
 for k in(2,3,4):
- nb,=struct.unpack_from('<H',M,q);q+=2
- for _ in range(nb):IM[tuple(M[q:q+k])]=M[q+k];q+=k+1
+ {nb_rd}
+ for _ in {rn}(nb):IM[tuple(M[q:q+k])]=M[q+k];q+=k+1
 nu=M[q:q+{n_tot_ctx}];rp=q+{n_tot_ctx};fq=rp+sum(nu);RP=[]
-for c in range({n_tot_ctx}):
+for c in {rn}({n_tot_ctx}):
  t=[];pv=0
- for _ in range(nu[c]):pv+=M[rp];rp+=1;f=M[fq]+1;fq+=1;t.extend((pv,f,k) for k in range(f))
+ for _ in {rn}(nu[c]):pv+=M[rp];rp+=1;f=M[fq]+1;fq+=1;t.extend((pv,f,k) for k in {rn}(f))
  RP.append(t)
 q_={n_ch + 1};lr=[0]*q_;rr=[0]*q_;vr=[0]*q_;nt=1;li=c=pl=0
-for l in range(1,33):
- for s in range(q_):
+for l in {rn}(1,33):
+ for s in {rn}(q_):
   if ln[s]==l:
    c<<=l-pl;pl=l;u=0
-   for b in range(l-1,0,-1):
+   for b in {rn}(l-1,0,-1):
     tb=rr if c>>b&1 else lr
     if not tb[u]:tb[u]=nt;nt+=1
     u=tb[u]
    (rr if c&1 else lr)[u]=q_-1+li;vr[li]=s;li+=1;c+=1
-S=[4095 if i<{sp - sc} else 1 if i>{sp + sc} else min(4095,round(4096/(1+math.exp((i-{sp})/{dn})))) for i in range({2 * sp + 1})]
+S=[4095 if i<{sp - sc} else 1 if i>{sp + sc} else min(4095,{sig_expr}) for i in {rn}({2 * sp + 1})]
 h0={n_ch};nf={n_fsm};qw=W_[h0+3*nf:]
-T1=[[W_[u]*16+{sp}+qw[u*3]*W_[h0+s] for s in range(nf)] for u in range(h0)]
-T2=[[qw[u*3+1]*W_[h0+nf+s] for s in range(nf)] for u in range(h0)]
-T3=[[qw[u*3+2]*W_[h0+2*nf+s] for s in range(nf)] for u in range(h0)]
+T1=[[W_[u]*16+{sp}+qw[u*3]*W_[h0+s] for s in {rn}(nf)] for u in {rn}(h0)]
+T2=[[qw[u*3+1]*W_[h0+nf+s] for s in {rn}(nf)] for u in {rn}(h0)]
+T3=[[qw[u*3+2]*W_[h0+2*nf+s] for s in {rn}(nf)] for u in {rn}(h0)]
 F1=[0]*{s_stride * f1_k * h_stride};F2=[0]*({(1 << 18) + h0 if a['use_h2_hash'] else s_stride * s_stride * h0});F3=[0]*{(1 << m3b) + h0}
-VV=lambda c:c in b'aeiou'
+VV=lambda c:{vv_expr}
 Y=lambda w:len(w)>1 and w[-1]==121 and not VV(w[-2])
 MW=lambda w,k,i:(w[:-k] if k else w)+A[i]
 def SF(k,w,u0):
  m=len(w)>1;e=w[-1];f=m and w[-2];y=Y(w);z=e==101
- if k==0:return MW(w,0,39) if not u0 and(e in b'sxz' or e==104 and f in b'cs') else MW(w,1,40) if not u0 and y else MW(w,0,41)
+ if k==0:return MW(w,0,39) if not u0 and({sxz_chk} or e==104 and {cs_chk}) else MW(w,1,40) if not u0 and y else MW(w,0,41)
  if k in(1,3,4):j=k>>1;return MW(w,0 if z else y,33+j if z else 36+j if y else(7,10,11)[j])
- if k==2:return MW(w,z and not(m and f in b'eyo'),8)
+ if k==2:return MW(w,z and not(m and {eyo_chk}),8)
  if k==5:t=len(w)>2 and z and f==108 and not VV(w[-3]);return MW(w,y or t,42 if y else 12 if t else 14 if m and f==105 and e==99 else 17)
- if k==6:return MW(w,z and not(m and f in b'ecg'),43)
+ if k==6:return MW(w,z and not(m and {ecg_chk}),43)
  return MW(w,z or e==121,45 if k>7 else 44 if e==121 else 13)
-OW=[]
+{ow_init}
 def AP(w,o,u0):
- if o>=37:OW.append(A[o-19]+w);return
- if o==0:OW.append(w+b"'s");return
- if o<4:OW.append(SF(o-1,w,u0));return
- p=ao[o];s=w;d=b"";c=0
+ if o>=37:{oa}(A[o-19]+w);return
+ if o==0:{oa}(w+b"'s");return
+ if o<4:{oa}(SF(o-1,w,u0));return
+ p=ao[o];s=w;d={d_init};c=0
  while not c&32:
   c=M[p];p+=1;u=c&31
   if u<9:d=SF(u,s,u0)
   elif u<14:i=M[p];p+=1;y=Y(s);k=s[-1]==101 if u==10 else y if u==11 else(y or s[-1]==101) if u==12 else u>12;d=MW(s,k,i+1 if u==11 and not y else i)
   elif u==14:d=s+s[-1:]+A[M[p]];p+=1
   elif u==15:d=A[M[p]]+s;p+=1
-  elif u==16:OW.append(d)
+  elif u==16:{oa}(d)
   elif u<19:
-   OW.append(d);OW.append(d+A[0])
-   if u>17:OW.append(SF(0,d,u0))
+   {oa}(d);{oa}(d+A[0])
+   if u>17:{oa}(SF(0,d,u0))
   else:s=d
-xp=int.from_bytes(pb[:4],'big');po=4;Rn=1<<32;L=int.from_bytes(Qd[:4],'big');di=4;pc=[{bos}]*5;PB=[];pl=pp=0
+{rans_hdr};pc=[{bos}]*5;PB=[];pl=pp=0
 def dr(c):
  global xp,po
  v=RP[c][xp&255];xp=v[1]*(xp>>8)+v[2]
  while xp<65536:xp=(xp<<8)|pb[po];po+=1
  return v[0]
-for _ in range({a['n_base']}):
+for _ in {rn}({a['n_base']}):
  p=dr((min(pl,11)<<2)|((pp>0)<<1)|(pl and UP[pc[5]]));lo={bos} if p==pl else pc[5+p]
  c0=dr(48+CO.get((lo,pc[4+p]),c0f[lo]))
  pc=pc[:5+p]+[c0];Wb=PB[:p]+[CH[c0]];u0=UP[pc[5]];c1=c0;c2=pc[4+p];c3=pc[3+p];c4=pc[2+p];rk=0
  while 1:
   o1=(c1*{f1_k}+min(rk,{f1_k - 1}))*{h_stride};rk+=1;{b2_py}
-  z_=(((c3<<{cb_shift * 2})^(c2<<{cb_shift})^c1^34952)*2654435761)&4294967295;b3=(z_^(z_>>16))&{mask3};u=0
+  z_=(((c3<<{cb_shift * 2})^(c2<<{cb_shift})^c1^34952)*2654435761)&{u32};b3=(z_^(z_>>16))&{mask3};u=0
   while u<h0:
    k1=o1+u;k2=b2+u;k3=b3+u;s1=F1[k1];s2=F2[k2];s3=F3[k3];rv=(Rn>>12)*S[T1[u][s1]+T2[u][s2]+T3[u][s3]];b=1 if L>=rv else 0
    if b:L-=rv;Rn-=rv;u=rr[u]
    else:Rn=rv;u=lr[u]
    F1[k1]=NX[b][s1];F2[k2]=NX[b][s2];F3[k3]=NX[b][s3]
-   while Rn<16777216:Rn<<=8;L=((L<<8)|Qd[di])&4294967295;di+=1
+   while Rn<{u24}:Rn<<=8;L=((L<<8)|Qd[di])&{u32};di+=1
   tk=vr[u-h0]
   if tk=={eow}:break
   pc.append(tk);Wb.append(CH[tk]);c4,c3,c2,c1=c3,c2,c1,tk
  cv=iu0 if u0 else IM.get((c4,c3,c2,c1),IM.get((c3,c2,c1),IM.get((c2,c1),(ilf if len(Wb)>6 else isf)[c1])))
- vi=dr({48 + ac0}+cv);inf=up[vi] if u0 else vi;wb=b"".join(Wb);OW.append(wb)
- for k in range(M[mo[inf]]):AP(wb,M[mo[inf]+1+k],u0)
+ vi=dr({48 + ac0}+cv);inf=up[vi] if u0 else vi;wb={wb_join};{oa}(wb)
+ for k in {rn}(M[mo[inf]]):AP(wb,M[mo[inf]+1+k],u0)
  PB=Wb;pl=len(Wb);pp=p
-OW.sort();_w(b"\\n".join(OW)+(b"\\n" if OW else b""))"""
+OW.sort();_w({ow_out})"""
+        )
+        return re.sub(r'(\)|\]|\") (if|else|for) ', r'\1\2 ', code) if py2 else code
+
+    @staticmethod
+    def _wrap_py2_solver(
+        u_str: str, x_end: int, uc_str: str, x_end_c: int, o_buf: int
+    ) -> str:
+        """Assemble Python 2.7 and 3.x dual-compatible standalone wrapper."""
+        return (
+            "#coding:utf-8\n"
+            "import ctypes as C,os,struct as T,subprocess as S,sys\n"
+            f'U=u"{u_str}"\n'
+            f'K=u"{uc_str}"\n'
+            "nt=os.name=='nt';R=range;Y=bytearray;V=memoryview;Q=T.unpack_from\n"
+            "def _w(b):\n"
+            " if nt:import msvcrt;msvcrt.setmode(1,os.O_BINARY)\n"
+            " getattr(sys.stdout,'buffer',sys.stdout).write(b)\n"
+            "def du(s,x):\n"
+            " B=Y();v=2305806\n"
+            " for c in reversed(s):\n"
+            "  k=ord(c);s=(k<2048)*7+(k<128)*7\n"
+            "  while x>=(476844<<8+s):B.append(x&255);x>>=8\n"
+            "  x=(x>>s)*v+(x&(1<<s)-1)+((k-1-(k>10)-(k>13)-(k>26)-(k>34)-(k>92))<<14 if k<128 else 1998848+((k-128-(k>1564))<<7)if k<2048 else 2244480+k-(2048+(k>=8304)*112+(k>=57344)*2048))\n"
+            " return T.pack('>Q',x-(1<<40))[3:]+V(B[::-1]).tobytes()\n"
+            "def rd(b,p,m):\n"
+            " nu=b[p]|b[p+1]<<8;nl=b[p+2]|b[p+3]<<8;p+=4;s=0;t=[]\n"
+            " for _ in R(nu):\n"
+            "  d=b[p];p+=1\n"
+            "  if d==255:d+=b[p];p+=1\n"
+            "  s+=d;f=b[p];p+=1\n"
+            "  if f>=240:f=(f-240)<<8|b[p];p+=1\n"
+            "  t.extend((s,f,j)for j in R(f))\n"
+            " x=0\n"
+            " for _ in R(4):x=x<<8|b[p];p+=1\n"
+            " o=[]\n"
+            " for _ in R(nl):\n"
+            "  u,f,j=t[x&(1<<m)-1];x=f*(x>>m)+j\n"
+            "  while x<65536:x=x<<8|b[p];p+=1\n"
+            "  o.append(u)\n"
+            " return o\n"
+            "def dz(b):\n"
+            " l1,l2,l3=Q('<HHH',b);b=Y(b);W=rd(b,6,11);D=rd(b,6+l1,8);lp=6+l1+l2;e=b[lp+l3:];o=Y();di=li=bp=0\n"
+            " for s in W:\n"
+            "  if s<256:o.append(s)\n"
+            "  else:\n"
+            "   l=34+b[lp+li]if s==287 else s-253;li+=s==287;d=D[di];di+=1\n"
+            "   if d<2:q=d+1\n"
+            "   else:\n"
+            "    g=d-1;q=1+(1<<g)\n"
+            "    for k in R(g):q+=((e[bp>>3]>>(bp&7))&1)<<k;bp+=1\n"
+            "   for _ in R(l):o.append(o[-q])\n"
+            " return V(o).tobytes()\n"
+            f"cb,pf=dz(du(K,{x_end_c})).split(b'\\0',1);D=du(U,{x_end});lm,lp=Q('>II',D);M=dz(D[8:8+lm]);pb=D[8+lm:];Qd=pb[lp:];sf=(nt and os.getenv('TEMP','.')or'/tmp')+'/_%d.'%os.getpid()+(nt and'dll'or'so')\n"
+            "try:\n"
+            " P=S.Popen(['gcc','-O0','-shared','-fPIC','-s','-x','c','-','-o',sf],stdin=S.PIPE,stderr=S.PIPE);P.communicate(cb);assert not P.returncode\n"
+            f" L=C.CDLL(sf);O=(C.c_char*{o_buf})();_w(O[:L.d(M,pb,Qd,O)])\n"
+            " if nt:import _ctypes;_ctypes.FreeLibrary(L._handle)\n"
+            "except Exception:exec(pf,{'M':M,'pb':pb,'Qd':Qd,'_w':_w})\n"
+            "finally:\n"
+            " try:os.remove(sf)\n"
+            " except OSError:pass\n"
         )
 
     @classmethod
-    def generate(cls, a: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
-        """Generate standalone solve.py (< 88 KiB) with C decoder + pure-Python fallback."""
+    def _generate_solver(cls, a: Dict[str, Any], py2: bool = False) -> Tuple[str, Dict[str, Any]]:
+        """Shared generation pipeline for standalone Python 3 and Python 2.7 solvers."""
         meta_lz = a["meta_lz"]
         pci_b = a["pci_b"]
         ml_bin = a["ml_bin"]
 
-        py_fallback = cls._build_nn_py_fallback(a)
+        py_fallback = cls._build_nn_py_fallback(a, py2=py2)
 
         blob = (
             struct.pack(">II", len(meta_lz), len(pci_b))
@@ -278,64 +379,68 @@ OW.sort();_w(b"\\n".join(OW)+(b"\\n" if OW else b""))"""
             + pci_b
             + ml_bin
         )
-        u_str, x_end = UTF8Encoder.encode_py_nobidi(blob)
+        encode_fn = UTF8Encoder.encode_py2_nobidi if py2 else UTF8Encoder.encode_py_nobidi
+        u_str, x_end = encode_fn(blob)
 
         c_src = cls._build_nn_c_decoder(a)
         c_lz = DPOptimalLZSS.compress((c_src + "\x00" + py_fallback).encode("utf-8"))
-        uc_str, x_end_c = UTF8Encoder.encode_py_nobidi(c_lz)
+        uc_str, x_end_c = encode_fn(c_lz)
 
         o_buf = max(a["total_out_bytes"] + 64, 1024)
-        py_src = (
-            "import ctypes as C,os,struct as T,sys\n"
-            f'U="{u_str}"\n'
-            f'K="{uc_str}"\n'
-            "nt=os.name=='nt'\n"
-            "def _w(b):\n"
-            " if nt:import msvcrt;msvcrt.setmode(1,os.O_BINARY)\n"
-            " sys.stdout.buffer.write(b)\n"
-            "def du(s,x):\n"
-            " U0=(1<<40)//2322190;B=bytearray()\n"
-            " for c in reversed(s):\n"
-            "  k=ord(c);sh=22 if k<128 else 15 if k<2048 else 8\n"
-            "  while x>=(U0<<sh):B.append(x&255);x>>=8\n"
-            "  x=(x>>14)*2322190+((k-1-(k>10)-(k>13)-(k>34)-(k>92))<<14)+(x&16383)if k<128 else(x>>7)*2322190+2015232+((k-128-(k>1564))<<7)+(x&127)if k<2048 else x*2322190+2260864+k-(2048 if k<8304 else 2160 if k<57344 else 4208)\n"
-            " return(x-(1<<40)).to_bytes(5,'big')+B[::-1]\n"
-            "def rd(b,m):\n"
-            " nu,nl=T.unpack_from('<HH',b);p=4;s=0;t=[]\n"
-            " for _ in range(nu):\n"
-            "  d=b[p];p+=1\n"
-            "  if d==255:d+=b[p];p+=1\n"
-            "  s+=d;f=b[p];p+=1\n"
-            "  if f>=240:f=((f-240)<<8)|b[p];p+=1\n"
-            "  t.extend((s,f,j)for j in range(f))\n"
-            " x=int.from_bytes(b[p:p+4],'big');p+=4;o=[]\n"
-            " for _ in range(nl):\n"
-            "  u,f,j=t[x&(1<<m)-1];x=f*(x>>m)+j\n"
-            "  while x<65536:x=(x<<8)|b[p];p+=1\n"
-            "  o.append(u)\n"
-            " return o\n"
-            "def dz(b):\n"
-            " l1,l2,l3=T.unpack_from('<HHH',b);W=rd(b[6:],11);D=rd(b[6+l1:],8);lp=6+l1+l2;e=b[lp+l3:];o=bytearray();di=li=bp=0\n"
-            " for s in W:\n"
-            "  if s<256:o.append(s)\n"
-            "  else:\n"
-            "   l=34+b[lp+li]if s==287 else 3+s-256;li+=s==287;d=D[di];di+=1\n"
-            "   if d<2:q=d+1\n"
-            "   else:\n"
-            "    g=d-1;q=1+(1<<g)\n"
-            "    for k in range(g):q+=((e[bp>>3]>>(bp&7))&1)<<k;bp+=1\n"
-            "   for _ in range(l):o.append(o[-q])\n"
-            " return bytes(o)\n"
-            f"cb,pf=dz(du(K,{x_end_c})).split(b'\\0',1);D=du(U,{x_end});lm,lp=T.unpack_from('>II',D);M=dz(D[8:8+lm]);pb=D[8+lm:];Qd=pb[lp:];sf=os.path.join(os.getenv('TEMP','.')if nt else'/tmp',f'_{{os.getpid()}}.'+(nt and'dll'or'so'))\n"
-            "try:\n"
-            " import subprocess as S;S.run(['gcc','-O0','-pipe','-shared','-fPIC','-s','-x','c','-','-o',sf],input=cb,check=1,stderr=S.DEVNULL)\n"
-            f" L=C.CDLL(sf);O=(C.c_char*{o_buf})();_w(memoryview(O)[:L.d(M,pb,Qd,O)])\n"
-            " if nt:import _ctypes;_ctypes.FreeLibrary(L._handle)\n"
-            "except Exception:exec(pf.decode(),{'M':M,'pb':pb,'Qd':Qd,'_w':_w})\n"
-            "finally:\n"
-            " try:os.remove(sf)\n"
-            " except OSError:pass\n"
-        )
+        if py2:
+            py_src = cls._wrap_py2_solver(u_str, x_end, uc_str, x_end_c, o_buf)
+        else:
+            py_src = (
+                "import ctypes as C,os,struct as T,sys\n"
+                f'U="{u_str}"\n'
+                f'K="{uc_str}"\n'
+                "nt=os.name=='nt'\n"
+                "def _w(b):\n"
+                " if nt:import msvcrt;msvcrt.setmode(1,os.O_BINARY)\n"
+                " sys.stdout.buffer.write(b)\n"
+                "def du(s,x):\n"
+                " U0=(1<<40)//2322190;B=bytearray()\n"
+                " for c in reversed(s):\n"
+                "  k=ord(c);sh=22 if k<128 else 15 if k<2048 else 8\n"
+                "  while x>=(U0<<sh):B.append(x&255);x>>=8\n"
+                "  x=(x>>14)*2322190+((k-1-(k>10)-(k>13)-(k>34)-(k>92))<<14)+(x&16383)if k<128 else(x>>7)*2322190+2015232+((k-128-(k>1564))<<7)+(x&127)if k<2048 else x*2322190+2260864+k-(2048 if k<8304 else 2160 if k<57344 else 4208)\n"
+                " return(x-(1<<40)).to_bytes(5,'big')+B[::-1]\n"
+                "def rd(b,m):\n"
+                " nu,nl=T.unpack_from('<HH',b);p=4;s=0;t=[]\n"
+                " for _ in range(nu):\n"
+                "  d=b[p];p+=1\n"
+                "  if d==255:d+=b[p];p+=1\n"
+                "  s+=d;f=b[p];p+=1\n"
+                "  if f>=240:f=((f-240)<<8)|b[p];p+=1\n"
+                "  t.extend((s,f,j)for j in range(f))\n"
+                " x=int.from_bytes(b[p:p+4],'big');p+=4;o=[]\n"
+                " for _ in range(nl):\n"
+                "  u,f,j=t[x&(1<<m)-1];x=f*(x>>m)+j\n"
+                "  while x<65536:x=(x<<8)|b[p];p+=1\n"
+                "  o.append(u)\n"
+                " return o\n"
+                "def dz(b):\n"
+                " l1,l2,l3=T.unpack_from('<HHH',b);W=rd(b[6:],11);D=rd(b[6+l1:],8);lp=6+l1+l2;e=b[lp+l3:];o=bytearray();di=li=bp=0\n"
+                " for s in W:\n"
+                "  if s<256:o.append(s)\n"
+                "  else:\n"
+                "   l=34+b[lp+li]if s==287 else 3+s-256;li+=s==287;d=D[di];di+=1\n"
+                "   if d<2:q=d+1\n"
+                "   else:\n"
+                "    g=d-1;q=1+(1<<g)\n"
+                "    for k in range(g):q+=((e[bp>>3]>>(bp&7))&1)<<k;bp+=1\n"
+                "   for _ in range(l):o.append(o[-q])\n"
+                " return bytes(o)\n"
+                f"cb,pf=dz(du(K,{x_end_c})).split(b'\\0',1);D=du(U,{x_end});lm,lp=T.unpack_from('>II',D);M=dz(D[8:8+lm]);pb=D[8+lm:];Qd=pb[lp:];sf=os.path.join(os.getenv('TEMP','.')if nt else'/tmp',f'_{{os.getpid()}}.'+(nt and'dll'or'so'))\n"
+                "try:\n"
+                " import subprocess as S;S.run(['gcc','-O0','-pipe','-shared','-fPIC','-s','-x','c','-','-o',sf],input=cb,check=1,stderr=S.DEVNULL)\n"
+                f" L=C.CDLL(sf);O=(C.c_char*{o_buf})();_w(memoryview(O)[:L.d(M,pb,Qd,O)])\n"
+                " if nt:import _ctypes;_ctypes.FreeLibrary(L._handle)\n"
+                "except Exception:exec(pf.decode(),{'M':M,'pb':pb,'Qd':Qd,'_w':_w})\n"
+                "finally:\n"
+                " try:os.remove(sf)\n"
+                " except OSError:pass\n"
+            )
 
         info = {
             "blob_len": len(blob),
@@ -346,3 +451,8 @@ OW.sort();_w(b"\\n".join(OW)+(b"\\n" if OW else b""))"""
             "c_src": c_src,
         }
         return py_src, info
+
+    @classmethod
+    def generate(cls, a: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+        """Generate standalone solve.py (< 88 KiB) with C decoder + pure-Python fallback."""
+        return cls._generate_solver(a, py2=False)

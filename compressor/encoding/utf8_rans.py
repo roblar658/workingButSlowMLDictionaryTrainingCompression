@@ -9,6 +9,7 @@ from typing import List, Tuple
 
 _SAFE1_CPP_RS = [i for i in range(1, 128) if i not in (10, 13)]
 _SAFE1_PY = [i for i in range(1, 128) if i not in (10, 13, 34, 92)]
+_SAFE1_PY2 = [i for i in range(1, 128) if i not in (10, 13, 26, 34, 92)]
 
 
 def _encode_nobidi(raw: bytes, safe1: List[int]) -> Tuple[str, int]:
@@ -108,4 +109,14 @@ class UTF8Encoder:
         """
         out_s, x = _encode_nobidi(raw, _SAFE1_PY)
         assert '"' not in out_s and '\\' not in out_s and '\n' not in out_s and '\r' not in out_s
+        return out_s, x
+
+    @staticmethod
+    def encode_py2_nobidi(raw: bytes) -> Tuple[str, int]:
+        """Encode binary stream into UTF-8 codepoints safe for Python 2.7 and 3.x strings.
+
+        Also excludes Ctrl-Z / SUB (26) so Windows Python 2.7 text-mode reads never truncate.
+        """
+        out_s, x = _encode_nobidi(raw, _SAFE1_PY2)
+        assert '"' not in out_s and '\\' not in out_s and '\n' not in out_s and '\r' not in out_s and '\x1a' not in out_s
         return out_s, x

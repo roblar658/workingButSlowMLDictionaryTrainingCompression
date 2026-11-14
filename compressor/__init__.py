@@ -22,6 +22,7 @@ from compressor.encoding.rans import RangeANS
 from compressor.encoding.lzss import DPOptimalLZSS
 from compressor.encoding.utf8_rans import UTF8Encoder
 from compressor.codegen.cpp_generator import CppSolverGenerator
+from compressor.codegen.py2_generator import Py2SolverGenerator
 from compressor.codegen.py_generator import PySolverGenerator
 from compressor.pipeline import DictionaryCompressionPipeline
 
@@ -39,6 +40,7 @@ __all__ = [
     "DPOptimalLZSS",
     "UTF8Encoder",
     "CppSolverGenerator",
+    "Py2SolverGenerator",
     "PySolverGenerator",
     "DictionaryCompressionPipeline",
 ]

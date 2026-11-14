@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Automated test suite for arbitrary-UTF-8 ML dictionary compression and C++/Python/Rust solvers."""
 
+import ast
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -14,7 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from compressor.codegen import CppSolverGenerator, PySolverGenerator, RsSolverGenerator
+from compressor.codegen import CppSolverGenerator, Py2SolverGenerator, PySolverGenerator, RsSolverGenerator
 from compressor.encoding import DPOptimalLZSS, UTF8Encoder
 from compressor.models import ContextRouter
 from compressor.morphology import DatasetBuilder
@@ -27,9 +29,10 @@ SIZE_LIMIT_BYTES = 90112  # 88 KiB
 BIDI_CODEPOINTS = set(range(0x202A, 0x202F)) | set(range(0x2066, 0x206A)) | {0x061C, 0x200E, 0x200F}
 
 
-def _decode_py_u8(s: str, x: int) -> bytes:
-    """Reference decoder matching UTF8Encoder.encode_py_nobidi."""
-    u0 = (1 << 40) // 2322190
+def _decode_py_u8(s: str, x: int, exclude_sub: bool = False) -> bytes:
+    """Reference decoder matching UTF8Encoder.encode_py_nobidi / encode_py2_nobidi."""
+    r_val, off2, off3 = (2305806, 1998848, 2244480) if exclude_sub else (2322190, 2015232, 2260864)
+    u0 = (1 << 40) // r_val
     out = bytearray()
     for ch in reversed(s):
         k = ord(ch)
@@ -38,13 +41,63 @@ def _decode_py_u8(s: str, x: int) -> bytes:
             out.append(x & 255)
             x >>= 8
         if k < 128:
-            x = (x >> 14) * 2322190 + ((k - 1 - (k > 10) - (k > 13) - (k > 34) - (k > 92)) << 14) + (x & 16383)
+            sub1 = k - 1 - (k > 10) - (k > 13) - (k > 34) - (k > 92) - (exclude_sub and k > 26)
+            x = (x >> 14) * r_val + (sub1 << 14) + (x & 16383)
         elif k < 2048:
-            x = (x >> 7) * 2322190 + 2015232 + ((k - 128 - (k > 1564)) << 7) + (x & 127)
+            x = (x >> 7) * r_val + off2 + ((k - 128 - (k > 1564)) << 7) + (x & 127)
         else:
             off = 2048 if k < 8304 else 2160 if k < 57344 else 4208
-            x = x * 2322190 + 2260864 + k - off
+            x = x * r_val + off3 + k - off
     return (x - (1 << 40)).to_bytes(5, "big") + bytes(out[::-1])
+
+
+def _extract_py2_fallback(src: str) -> bytes:
+    """Extract compressed pure-Python fallback payload from a standalone solve_py2.py source."""
+    ns = {}
+    exec(compile(src.split("cb,pf=", 1)[0], "py2_hdr", "exec"), ns)
+    m = re.search(r"du\(K,(\d+)\)", src.split("cb,pf=", 1)[1])
+    assert m is not None
+    cb, pf = ns["dz"](ns["du"](ns["K"], int(m.group(1)))).split(b"\0", 1)
+    assert cb
+    return pf
+
+
+def _assert_py2_compatible(test: unittest.TestCase, src: str) -> None:
+    """Verify static Python 2.7 compatibility of both wrapper and compressed fallback."""
+    test.assertTrue(src.startswith("#coding:utf-8\n"))
+    raw = src.encode("utf-8")
+    test.assertNotIn(b"\x1a", raw)
+    pf_src = _extract_py2_fallback(src).decode("utf-8")
+    py3_only_nodes = tuple(
+        cls
+        for name in (
+            "JoinedStr",
+            "FormattedValue",
+            "AnnAssign",
+            "NamedExpr",
+            "AsyncFunctionDef",
+            "AsyncFor",
+            "AsyncWith",
+            "Await",
+            "Nonlocal",
+            "YieldFrom",
+            "Starred",
+            "Match",
+        )
+        if (cls := getattr(ast, name, None)) is not None
+    )
+    for label, code in (("wrapper", src), ("fallback", pf_src)):
+        tree = ast.parse(code)
+        for node in ast.walk(tree):
+            test.assertNotIsInstance(node, py3_only_nodes, f"{label} uses Python 3 syntax: {type(node)}")
+            if isinstance(node, ast.FunctionDef):
+                test.assertIsNone(node.returns, f"{label} uses return annotations")
+                test.assertFalse(node.args.kwonlyargs, f"{label} uses kwonlyargs")
+                for arg in node.args.args:
+                    test.assertIsNone(arg.annotation, f"{label} uses arg annotations")
+    for forbidden in (".to_bytes", ".from_bytes", "DEVNULL", "S.run(", ".decode()", "round("):
+        test.assertNotIn(forbidden, src)
+        test.assertNotIn(forbidden, pf_src)
 
 
 def _decode_cpp_u8(s: str, x: int) -> bytes:
@@ -137,6 +190,42 @@ def _norm_dict_bytes(raw_bytes: bytes) -> bytes:
     return ("\n".join(words) + "\n").encode("utf-8") if words else b""
 
 
+def _verify_py_solver(
+    test: unittest.TestCase,
+    py_path: Path,
+    exp: bytes,
+    td_path: Path,
+    c_src: str = None,
+    check_py2: bool = False,
+) -> None:
+    """Verify embedded C compilation (if gcc present), gcc runtime, fallback runtime, and optional python2."""
+    if shutil.which("gcc"):
+        if c_src is not None:
+            dll_p = td_path / (f"check_{py_path.stem}." + ("dll" if os.name == "nt" else "so"))
+            gcc_cmd = ["gcc", "-O0", "-Wall", "-Wextra", "-Wbidi-chars=any", "-shared"]
+            if os.name != "nt":
+                gcc_cmd.append("-fPIC")
+            gcc_cmd.extend(["-x", "c", "-", "-o", str(dll_p)])
+            res_c = subprocess.run(gcc_cmd, input=c_src, capture_output=True, text=True)
+            test.assertEqual(res_c.returncode, 0, res_c.stderr)
+            test.assertEqual(res_c.stderr.strip(), "", res_c.stderr)
+
+        res_gcc = subprocess.run([sys.executable, str(py_path)], capture_output=True)
+        test.assertEqual(res_gcc.returncode, 0, res_gcc.stderr.decode("utf-8", "replace"))
+        test.assertEqual(res_gcc.stdout.replace(b"\r\n", b"\n"), exp)
+
+    env_no_gcc = os.environ.copy()
+    env_no_gcc["PATH"] = ""
+    res_fb = subprocess.run([sys.executable, str(py_path)], capture_output=True, env=env_no_gcc)
+    test.assertEqual(res_fb.returncode, 0, res_fb.stderr.decode("utf-8", "replace"))
+    test.assertEqual(res_fb.stdout.replace(b"\r\n", b"\n"), exp)
+
+    if check_py2 and shutil.which("python2"):
+        res_py2 = subprocess.run(["python2", str(py_path)], capture_output=True)
+        test.assertEqual(res_py2.returncode, 0, res_py2.stderr.decode("utf-8", "replace"))
+        test.assertEqual(res_py2.stdout.replace(b"\r\n", b"\n"), exp)
+
+
 class TestEncodingPrimitives(unittest.TestCase):
     """Unit tests for UTF-8 non-bidi coding, LZSS compression, and KL context routing."""
 
@@ -150,6 +239,12 @@ class TestEncodingPrimitives(unittest.TestCase):
             dec_py = _decode_py_u8(py_s, py_x)
             expected = raw if len(raw) >= 5 else raw + b"\x00" * (5 - len(raw))
             self.assertEqual(dec_py, expected)
+
+            py2_s, py2_x = UTF8Encoder.encode_py2_nobidi(raw)
+            self.assertFalse(any(c in py2_s for c in ('"', "\\", "\n", "\r", "\x1a")))
+            self.assertFalse(any(ord(c) in BIDI_CODEPOINTS for c in py2_s))
+            dec_py2 = _decode_py_u8(py2_s, py2_x, exclude_sub=True)
+            self.assertEqual(dec_py2, expected)
 
             cpp_s, cpp_x = UTF8Encoder.encode_cpp_nobidi(raw)
             self.assertNotIn(')qQ"', cpp_s)
@@ -208,26 +303,14 @@ class TestArbitraryDictionaries(unittest.TestCase):
             py_src, info = PySolverGenerator.generate(art)
             py_p = td_p / "solve.py"
             py_p.write_text(py_src, encoding="utf-8")
+            _verify_py_solver(self, py_p, exp, td_p, c_src=info["c_src"])
 
-            if shutil.which("gcc"):
-                dll_p = td_p / ("check.dll" if os.name == "nt" else "check.so")
-                gcc_cmd = ["gcc", "-O0", "-Wall", "-Wextra", "-Wbidi-chars=any", "-shared"]
-                if os.name != "nt":
-                    gcc_cmd.append("-fPIC")
-                gcc_cmd.extend(["-x", "c", "-", "-o", str(dll_p)])
-                res_c = subprocess.run(gcc_cmd, input=info["c_src"], capture_output=True, text=True)
-                self.assertEqual(res_c.returncode, 0, res_c.stderr)
-                self.assertEqual(res_c.stderr.strip(), "", res_c.stderr)
-
-                res_py_gcc = subprocess.run([sys.executable, str(py_p)], capture_output=True)
-                self.assertEqual(res_py_gcc.returncode, 0, res_py_gcc.stderr.decode("utf-8", "replace"))
-                self.assertEqual(res_py_gcc.stdout.replace(b"\r\n", b"\n"), exp)
-
-            env_no_gcc = os.environ.copy()
-            env_no_gcc["PATH"] = ""
-            res_py_fb = subprocess.run([sys.executable, str(py_p)], capture_output=True, env=env_no_gcc)
-            self.assertEqual(res_py_fb.returncode, 0, res_py_fb.stderr.decode("utf-8", "replace"))
-            self.assertEqual(res_py_fb.stdout.replace(b"\r\n", b"\n"), exp)
+            # 1b) Python 2.7/3.x dual-compatible generator: Py2 AST audit + gcc path + fallback
+            py2_src, info2 = Py2SolverGenerator.generate(art)
+            _assert_py2_compatible(self, py2_src)
+            py2_p = td_p / "solve_py2.py"
+            py2_p.write_text(py2_src, encoding="utf-8")
+            _verify_py_solver(self, py2_p, exp, td_p, c_src=info2["c_src"], check_py2=True)
 
             # 2) C++ generator: strict g++ compile check + execution
             cpp_src, _, _ = build_single_core_solver(str(dp), dataset_path=pkl_path, epochs=80)
@@ -300,25 +383,29 @@ class TestArbitraryDictionaries(unittest.TestCase):
 
 
 class TestRepositorySolvers(unittest.TestCase):
-    """Validates generated solve.cpp, solve.py, and solve.rs on the main REPO dict.txt."""
+    """Validates generated solve.cpp, solve.py, solve_py2.py, and solve.rs on the main REPO dict.txt."""
 
     def test_main_dict_solvers(self):
         dict_p = REPO_ROOT / "dict.txt"
         cpp_p = REPO_ROOT / "solve.cpp"
         py_p = REPO_ROOT / "solve.py"
+        py2_p = REPO_ROOT / "solve_py2.py"
         rs_p = REPO_ROOT / "solve.rs"
-        if not (dict_p.exists() and cpp_p.exists() and py_p.exists() and rs_p.exists()):
-            self.skipTest("dict.txt / solve.cpp / solve.py / solve.rs not present")
+        if not (dict_p.exists() and cpp_p.exists() and py_p.exists() and py2_p.exists() and rs_p.exists()):
+            self.skipTest("dict.txt / solve.cpp / solve.py / solve_py2.py / solve.rs not present")
 
         raw_ref = dict_p.read_bytes().replace(b"\r\n", b"\n")
         exp = _norm_dict_bytes(raw_ref)
 
         cpp_sz = cpp_p.stat().st_size
         py_sz = py_p.stat().st_size
+        py2_sz = py2_p.stat().st_size
         rs_sz = rs_p.stat().st_size
         self.assertLess(cpp_sz, SIZE_LIMIT_BYTES, f"solve.cpp {cpp_sz} >= {SIZE_LIMIT_BYTES}")
         self.assertLess(py_sz, SIZE_LIMIT_BYTES, f"solve.py {py_sz} >= {SIZE_LIMIT_BYTES}")
+        self.assertLess(py2_sz, SIZE_LIMIT_BYTES, f"solve_py2.py {py2_sz} >= {SIZE_LIMIT_BYTES}")
         self.assertLess(rs_sz, SIZE_LIMIT_BYTES, f"solve.rs {rs_sz} >= {SIZE_LIMIT_BYTES}")
+        _assert_py2_compatible(self, py2_p.read_text(encoding="utf-8"))
 
         with tempfile.TemporaryDirectory() as td:
             if shutil.which("g++"):
@@ -348,6 +435,7 @@ class TestRepositorySolvers(unittest.TestCase):
                 self.assertEqual(res_run_rs.returncode, 0)
                 self.assertEqual(res_run_rs.stdout.replace(b"\r\n", b"\n"), exp)
 
+            td_p = Path(td)
             if shutil.which("gcc"):
                 res_py_gcc = subprocess.run([sys.executable, str(py_p)], capture_output=True)
                 self.assertEqual(res_py_gcc.returncode, 0, res_py_gcc.stderr.decode("utf-8", "replace"))
@@ -358,6 +446,8 @@ class TestRepositorySolvers(unittest.TestCase):
             res_py_fb = subprocess.run([sys.executable, str(py_p)], capture_output=True, env=env_no_gcc)
             self.assertEqual(res_py_fb.returncode, 0, res_py_fb.stderr.decode("utf-8", "replace"))
             self.assertEqual(res_py_fb.stdout.replace(b"\r\n", b"\n"), exp)
+
+            _verify_py_solver(self, py2_p, exp, td_p, check_py2=True)
 
 
 if __name__ == "__main__":
