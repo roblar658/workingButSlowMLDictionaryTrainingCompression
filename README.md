@@ -7,17 +7,17 @@
 
 ---
 
-# DP + Neural Dictionary Compression (`dict.txt` → `< 88 KiB` standalone UTF-8 `solve.py` & `solve.cpp`)
+# DP + Neural Dictionary Compression (`dict.txt` → `< 88 KiB` standalone UTF-8 `solve.py`, `solve.cpp` & `solve.rs`)
 
-This repository contains standalone, lossless dictionary compressors and self-extracting solvers in both **Python 3** ([`solve.py`](solve.py)) and **C++20** ([`solve.cpp`](solve.cpp)) for [`dict.txt`](dict.txt) (`972,104` bytes, `102,399` English words):
+This repository contains standalone, lossless dictionary compressors and self-extracting solvers in **Python 3** ([`solve.py`](solve.py)), **C++20** ([`solve.cpp`](solve.cpp)), and **Rust** ([`solve.rs`](solve.rs)) for [`dict.txt`](dict.txt) (`972,104` bytes, `102,399` English words):
 
-| Metric | Python ([`solve.py`](solve.py), Unified C-Accel + Pure-Python Fallback) | C++20 ([`solve.cpp`](solve.cpp), Single-Core `RemOnly`) |
-|---|---|---|
-| Standalone UTF-8 file size | **`89,964` B (`87.86 KiB`)** (`9.25%` of input, `+148 B` headroom) | **`89,445` B (`87.35 KiB`)** (`9.20%` of input, `+667 B` headroom) |
-| External compression / build deps | **None** (headerless C shared library via `gcc` with zero-dependency pure-Python fallback) | **None** (zero threads, zero pthreads, zero OpenMP, standard `<cmath>`, `<cstdint>`, `<cstdio>`, `<cstring>`) |
-| Compile time | **None** (runtime standalone script) | `g++ -O2/-O3 -std=c++20 -Wall -Wextra -Wbidi-chars=any`, **0 warnings** |
-| Subprocess wall on `dict.txt` (Windows 11) | **`608.8 ms`** pure-Python fallback (`PATH=""`); `1101.7 ms` with runtime `gcc` DLL compilation | **`18.2 ms` best warm** (`-O3`, exact lossless match, `0` warnings) |
-| Raw payload (`bin_tot`) | `c_lz=5,194 B`, `py_lz=4,171 B`, `blob=73,230 B` (`meta_lz=4,269 B`, `pci_b=33,477 B`, `ml_bin=35,476 B`) | `73,230 B` (`meta_lz=4,269 B`, `pci_b=33,477 B`, `ml_bin=35,476 B` + `4 B` header + `4 B` pad) |
+| Metric | Python ([`solve.py`](solve.py), Unified C-Accel + Pure-Python Fallback) | C++20 ([`solve.cpp`](solve.cpp), Single-Core `RemOnly`) | Rust ([`solve.rs`](solve.rs), Standalone `std`-Only) |
+|---|---|---|---|
+| Standalone UTF-8 file size | **`89,964` B (`87.86 KiB`)** (`9.25%` of input, `+148 B` headroom) | **`89,445` B (`87.35 KiB`)** (`9.20%` of input, `+667 B` headroom) | **`89,425` B (`87.33 KiB`)** (`9.20%` of input, `+687 B` headroom) |
+| External compression / build deps | **None** (headerless C shared library via `gcc` with zero-dependency pure-Python fallback) | **None** (zero threads, zero pthreads, zero OpenMP, standard `<cmath>`, `<cstdint>`, `<cstdio>`, `<cstring>`) | **None** (zero external crates, zero threads, pure `std` Edition 2015 & 2021 compatible) |
+| Compile check | **None** (runtime standalone script) | `g++ -O2/-O3 -std=c++20 -Wall -Wextra -Wbidi-chars=any`, **0 warnings** | `rustc -O` / `rustc -C opt-level=3 --edition 2021 -D warnings`, **0 warnings** |
+| Subprocess wall on `dict.txt` (Windows 11) | **`608.8 ms`** pure-Python fallback (`PATH=""`); `1101.7 ms` with runtime `gcc` DLL compilation | **`17.15 ms` med** (`-O3`, `17.03 ms` min, `0` warnings) | **`18.61 ms` med** (`-C opt-level=3`, `18.02 ms` min, `0` warnings) |
+| Raw payload (`bin_tot`) | `c_lz=5,194 B`, `py_lz=4,171 B`, `blob=73,230 B` (`meta_lz=4,269 B`, `pci_b=33,477 B`, `ml_bin=35,476 B`) | `73,230 B` (`meta_lz=4,269 B`, `pci_b=33,477 B`, `ml_bin=35,476 B` + `4 B` header + `4 B` pad) | `73,230 B` (`meta_lz=4,269 B`, `pci_b=33,477 B`, `ml_bin=35,476 B` + `4 B` header + `4 B` pad) |
 
 ---
 
@@ -34,17 +34,17 @@ flowchart TD
 
     DATASET --> ROUTER["Context Router (Decompose into p, c0, rem, inf)"]
 
-    ROUTER --> TARGET_CPP["C++ Pipeline (solve.cpp)"]
+    ROUTER --> TARGET_CPP["C++ / Rust Pipeline (solve.cpp, solve.rs)"]
     ROUTER --> TARGET_PY["Python Pipeline (solve.py)"]
 
-    subgraph "C++ Neural PAQ Pipeline"
+    subgraph "C++ & Rust Neural PAQ Pipeline"
         TARGET_CPP --> RANS_CPP["Unified Context rANS (p, c0, inf - KL(48,32))"]
         TARGET_CPP --> PAQ_CPP["3-Order Bit-FSM + Logistic Model (418k bits)"]
         PAQ_CPP --> ADAM_CPP["Adam Optimizer & int8 Quantization (T1, T2, T3)"]
         ADAM_CPP --> RANGE_CPP["32-bit Multi-Precision Range Encoder"]
         RANS_CPP & RANGE_CPP --> LZSS_CPP["DP-Optimal LZSS (Metadata & Bytecode)"]
-        LZSS_CPP --> UTF8_CPP["Mixed-Radix Non-Bidi UTF-8 (R literal)"]
-        UTF8_CPP --> SOLVE_CPP["solve.cpp (89,445 B, ~18ms warm)"]
+        LZSS_CPP --> UTF8_CPP["Mixed-Radix Non-Bidi UTF-8 (Raw literal)"]
+        UTF8_CPP --> SOLVE_CPP["solve.cpp (89,445 B) & solve.rs (89,425 B)"]
     end
 
     subgraph "Python Unified NN+PAQ Pipeline"
@@ -148,15 +148,19 @@ gh_repo/
 │   │
 │   └── codegen/                    # Standalone self-extracting code generators
 │       ├── __init__.py
+│       ├── layout.py               # Shared C++/Rust buffer layout & bit-packing constants
 │       ├── cpp_generator.py        # CppSolverGenerator: Emits self-contained solve.cpp
+│       ├── rs_generator.py         # RsSolverGenerator: Emits self-contained solve.rs
 │       └── py_generator.py         # PySolverGenerator: Emits self-contained solve.py
 │
 ├── tests/                          # Automated unit & arbitrary UTF-8 edge-case tests
 │   └── test_dictionary_compression.py
 ├── save_ml_dataset.py              # CLI: Discovers cover rules and creates ml_dataset.pkl
 ├── mlDictionaryTrainingCompressionCpp.py # CLI: Trains C++ model and generates solve.cpp
+├── mlDictionaryTrainingCompressionRs.py  # CLI: Trains Rust model and generates solve.rs
 ├── mlDictionaryTrainingCompression.py    # CLI: Trains Python model and generates solve.py
 ├── solve.cpp                       # Verified standalone C++ solver (89,445 B)
+├── solve.rs                        # Verified standalone Rust solver (89,425 B)
 ├── solve.py                        # Verified standalone Python solver (89,964 B)
 ├── dict.txt                        # Target dictionary (102,399 words, 972,104 bytes)
 └── README.md                       # Architecture documentation & benchmarks
@@ -232,6 +236,11 @@ python solve.py > output_py.txt
 python mlDictionaryTrainingCompressionCpp.py
 g++ -O3 -std=c++20 -Wall -Wextra -Wbidi-chars=any solve.cpp -o solve_cpp
 ./solve_cpp > output_cpp.txt
+
+# 2c. Train & generate standalone std-only Rust solver (solve.rs)
+python mlDictionaryTrainingCompressionRs.py
+rustc -C opt-level=3 --edition 2021 -D warnings solve.rs -o solve_rs
+./solve_rs > output_rs.txt
 
 # 3. Run automated unit & arbitrary-UTF-8 (including ÆØÅæøå and ') test suite
 python -m unittest discover -s tests -v

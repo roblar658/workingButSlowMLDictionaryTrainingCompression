@@ -4,6 +4,9 @@ C++ Solver Generator Module
 Emits standalone, self-contained, high-performance C++20 solver (solve.cpp).
 """
 
+from compressor.codegen.layout import compute_solver_layout
+
+
 class CppSolverGenerator:
     """Emits standalone C++20 dictionary decompressor source code."""
 
@@ -37,42 +40,57 @@ class CppSolverGenerator:
         ex_cap: int = 128,
     ) -> str:
         """Generate standalone C++20 decompressor source code."""
-        stride = 96 if n_fsm <= 96 else 128
-        m3 = 1 << m3b
-        mask3 = m3 - 1
-        eow = n_ch
-        bos = n_ch + 1
-        s_stride = n_ch + 2
-        h0 = max(1, n_ch)
-        n_ch_safe = max(1, n_ch)
-        n_masks_safe = max(1, n_masks)
-        ex_rows = max(16, ex_cap)
-
-        m2_size = ((1 << 18) + h0) if use_h2_hash else (s_stride * s_stride * h0)
+        lay = compute_solver_layout(
+            u_str=u_str,
+            w_bytes_len=w_bytes_len,
+            n_fsm=n_fsm,
+            m3b=m3b,
+            n_tot_ctx=n_tot_ctx,
+            n_ch=n_ch,
+            n_masks=n_masks,
+            n_up_inf=n_up_inf,
+            total_words=total_words,
+            total_out_bytes=total_out_bytes,
+            max_bchars=max_bchars,
+            max_wbytes=max_wbytes,
+            blob_len=blob_len,
+            meta_raw_len=meta_raw_len,
+            use_h2_hash=use_h2_hash,
+            ex_cap=ex_cap,
+        )
+        stride = lay["stride"]
+        m3 = lay["m3"]
+        mask3 = lay["mask3"]
+        eow = lay["eow"]
+        bos = lay["bos"]
+        s_stride = lay["s_stride"]
+        h0 = lay["h0"]
+        n_ch_safe = lay["n_ch_safe"]
+        n_masks_safe = lay["n_masks_safe"]
+        ex_rows = lay["ex_rows"]
+        m2_size = lay["m2_size"]
         b2_expr = (
             f"{{V h=((c2<<{cb_shift})^c1^0x7777u)*0x9E3779B1u;b2=(h^(h>>16))&262143u;}}"
             if use_h2_hash
             else f"b2=(c2*{s_stride}+c1)*{h0};"
         )
-
-        w_buf = max(total_out_bytes + 64, 1024)
-        o_buf = max(total_out_bytes + 64, 1024)
-        nw_cap = max(total_words + 16, 64)
-        len_bits = max(6, max_wbytes.bit_length())
-        len_mask = (1 << len_bits) - 1
-        id_bits = max(17, total_words.bit_length())
-        id_mask_hex = hex((1 << id_bits) - 1)
-        cmp_start = (64 - id_bits) // 8
-        ol_type = "V" if (w_buf.bit_length() + len_bits <= 32) else "J"
-
-        mb_buf = max(meta_raw_len + 128, 1024)
-        an_start = max(blob_len + 128, 1024)
-        b_buf = an_start + 16
-        cp_buf = max(len(u_str) + 16, 256)
-        wv_buf = max(meta_raw_len + 128, 1024)
-        db_buf = max(meta_raw_len + 128, 512)
-        pc_buf = max(max_bchars + 16, 64)
-        wb_buf = max(max_wbytes + 16, 64)
+        w_buf = lay["w_buf"]
+        o_buf = lay["o_buf"]
+        nw_cap = lay["nw_cap"]
+        len_bits = lay["len_bits"]
+        len_mask = lay["len_mask"]
+        id_bits = lay["id_bits"]
+        id_mask_hex = lay["id_mask_hex"]
+        cmp_start = lay["cmp_start"]
+        ol_type = "V" if lay["is_ol_32"] else "J"
+        mb_buf = lay["mb_buf"]
+        an_start = lay["an_start"]
+        b_buf = lay["b_buf"]
+        cp_buf = lay["cp_buf"]
+        wv_buf = lay["wv_buf"]
+        db_buf = lay["db_buf"]
+        pc_buf = lay["pc_buf"]
+        wb_buf = lay["wb_buf"]
 
         cpp_code = (
 f"""#include <cmath>

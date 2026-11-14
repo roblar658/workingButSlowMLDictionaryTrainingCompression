@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Automated test suite for arbitrary-UTF-8 ML dictionary compression and C++/Python solvers."""
+"""Automated test suite for arbitrary-UTF-8 ML dictionary compression and C++/Python/Rust solvers."""
 
 import os
 import shutil
@@ -14,12 +14,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from compressor.codegen import CppSolverGenerator, PySolverGenerator
+from compressor.codegen import CppSolverGenerator, PySolverGenerator, RsSolverGenerator
 from compressor.encoding import DPOptimalLZSS, UTF8Encoder
 from compressor.models import ContextRouter
 from compressor.morphology import DatasetBuilder
 from compressor.pipeline import DictionaryCompressionPipeline
 from mlDictionaryTrainingCompressionCpp import build_single_core_solver
+from mlDictionaryTrainingCompressionRs import build_rust_solver
 
 
 SIZE_LIMIT_BYTES = 90112  # 88 KiB
@@ -157,6 +158,14 @@ class TestEncodingPrimitives(unittest.TestCase):
             dec_cpp = _decode_cpp_u8(cpp_s, cpp_x)
             self.assertEqual(dec_cpp, expected)
 
+            rs_s, rs_x = UTF8Encoder.encode_rs_nobidi(raw)
+            hashes = UTF8Encoder.rs_raw_hashes(rs_s)
+            self.assertNotIn('"' + hashes, rs_s)
+            self.assertFalse(any(c in rs_s for c in ("\n", "\r", "\0")))
+            self.assertFalse(any(ord(c) in BIDI_CODEPOINTS for c in rs_s))
+            dec_rs = _decode_cpp_u8(rs_s, rs_x)
+            self.assertEqual(dec_rs, expected)
+
     def test_dp_optimal_lzss_roundtrip(self):
         samples = [
             b"",
@@ -238,6 +247,25 @@ class TestArbitraryDictionaries(unittest.TestCase):
                 self.assertEqual(res_run.returncode, 0, res_run.stderr.decode("utf-8", "replace"))
                 self.assertEqual(res_run.stdout.replace(b"\r\n", b"\n"), exp)
 
+            # 3) Rust generator: strict rustc compile check + execution
+            rs_src, _, _ = build_rust_solver(str(dp), dataset_path=pkl_path, epochs=80)
+            rs_p = td_p / "solve.rs"
+            rs_exe_p = td_p / ("solve_rs.exe" if os.name == "nt" else "solve_rs")
+            rs_p.write_text(rs_src, encoding="utf-8")
+
+            if shutil.which("rustc"):
+                for flags in (["-O"], ["-C", "opt-level=3", "--edition", "2021"]):
+                    res_rs = subprocess.run(
+                        ["rustc", *flags, "-D", "warnings", str(rs_p), "-o", str(rs_exe_p)],
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(res_rs.returncode, 0, res_rs.stderr)
+                    self.assertEqual(res_rs.stderr.strip(), "", res_rs.stderr)
+                res_run_rs = subprocess.run([str(rs_exe_p)], capture_output=True)
+                self.assertEqual(res_run_rs.returncode, 0, res_run_rs.stderr.decode("utf-8", "replace"))
+                self.assertEqual(res_run_rs.stdout.replace(b"\r\n", b"\n"), exp)
+
     def test_empty_and_single_word_dicts(self):
         self._assert_roundtrip(b"")
         self._assert_roundtrip(b"a\n")
@@ -272,22 +300,25 @@ class TestArbitraryDictionaries(unittest.TestCase):
 
 
 class TestRepositorySolvers(unittest.TestCase):
-    """Validates generated solve.cpp and solve.py on the main REPO dict.txt."""
+    """Validates generated solve.cpp, solve.py, and solve.rs on the main REPO dict.txt."""
 
     def test_main_dict_solvers(self):
         dict_p = REPO_ROOT / "dict.txt"
         cpp_p = REPO_ROOT / "solve.cpp"
         py_p = REPO_ROOT / "solve.py"
-        if not (dict_p.exists() and cpp_p.exists() and py_p.exists()):
-            self.skipTest("dict.txt / solve.cpp / solve.py not present")
+        rs_p = REPO_ROOT / "solve.rs"
+        if not (dict_p.exists() and cpp_p.exists() and py_p.exists() and rs_p.exists()):
+            self.skipTest("dict.txt / solve.cpp / solve.py / solve.rs not present")
 
         raw_ref = dict_p.read_bytes().replace(b"\r\n", b"\n")
         exp = _norm_dict_bytes(raw_ref)
 
         cpp_sz = cpp_p.stat().st_size
         py_sz = py_p.stat().st_size
+        rs_sz = rs_p.stat().st_size
         self.assertLess(cpp_sz, SIZE_LIMIT_BYTES, f"solve.cpp {cpp_sz} >= {SIZE_LIMIT_BYTES}")
         self.assertLess(py_sz, SIZE_LIMIT_BYTES, f"solve.py {py_sz} >= {SIZE_LIMIT_BYTES}")
+        self.assertLess(rs_sz, SIZE_LIMIT_BYTES, f"solve.rs {rs_sz} >= {SIZE_LIMIT_BYTES}")
 
         with tempfile.TemporaryDirectory() as td:
             if shutil.which("g++"):
@@ -302,6 +333,20 @@ class TestRepositorySolvers(unittest.TestCase):
                 res_run = subprocess.run([str(exe_p)], capture_output=True)
                 self.assertEqual(res_run.returncode, 0)
                 self.assertEqual(res_run.stdout.replace(b"\r\n", b"\n"), exp)
+
+            if shutil.which("rustc"):
+                rs_exe_p = Path(td) / ("solve_main_rs.exe" if os.name == "nt" else "solve_main_rs")
+                for flags in (["-O"], ["-C", "opt-level=3", "--edition", "2021"]):
+                    res_rs = subprocess.run(
+                        ["rustc", *flags, "-D", "warnings", str(rs_p), "-o", str(rs_exe_p)],
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(res_rs.returncode, 0, res_rs.stderr)
+                    self.assertEqual(res_rs.stderr.strip(), "", res_rs.stderr)
+                res_run_rs = subprocess.run([str(rs_exe_p)], capture_output=True)
+                self.assertEqual(res_run_rs.returncode, 0)
+                self.assertEqual(res_run_rs.stdout.replace(b"\r\n", b"\n"), exp)
 
             if shutil.which("gcc"):
                 res_py_gcc = subprocess.run([sys.executable, str(py_p)], capture_output=True)
